@@ -12,6 +12,7 @@ import type {
   Engagement,
   EngagementStatus,
   Finding,
+  RunModel,
   RunStartResponse,
   ScopeItem,
   ScopeKind,
@@ -117,7 +118,7 @@ export function listFindings(slug: string): Promise<Finding[]> {
 
 export function startRun(
   slug: string,
-  body: { prompt: string },
+  body: { prompt: string; model?: RunModel },
 ): Promise<RunStartResponse> {
   return request<RunStartResponse>(`/engagements/${slug}/runs`, {
     method: "POST",

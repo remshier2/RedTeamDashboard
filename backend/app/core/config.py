@@ -8,14 +8,20 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://rtd:rtd@postgres:5432/rtd"
     redis_url: str = "redis://redis:6379/0"
 
-    # Which LLM backend default_llm() should construct.
+    # Default LLM backend when a run doesn't specify one.
     # - "anthropic" → Claude API (paid, requires ANTHROPIC_API_KEY)
+    # - "openai"    → OpenAI API (paid, requires OPENAI_API_KEY)
     # - "ollama"    → Local Ollama (free, runs as a compose service)
     # - "azure"     → Azure OpenAI (production target)
     llm_provider: str = "anthropic"
 
     # Anthropic
+    anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-4-7"
+
+    # OpenAI
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
 
     # Ollama
     ollama_host: str = "http://ollama:11434"

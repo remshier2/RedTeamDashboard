@@ -82,10 +82,18 @@ export interface Finding {
   created_at: string;
 }
 
+export type LLMProvider = "anthropic" | "openai" | "azure" | "ollama";
+
+export interface RunModel {
+  provider: LLMProvider;
+  name: string;
+}
+
 export interface RunStartResponse {
   engagement_id: string;
   thread_id: string;
   events_stream: string;
+  model: RunModel;
 }
 
 // SSE events emitted from the outbound stream.

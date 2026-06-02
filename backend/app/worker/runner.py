@@ -103,17 +103,45 @@ def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
 SessionFactory = Callable[[], Session]
 
 
+GraphFactory = Callable[[Mapping[str, str] | None], Any]
+
+
 class RunRunner:
     def __init__(
         self,
         *,
-        graph: Any,
+        graph: Any | None = None,
+        graph_factory: GraphFactory | None = None,
         redis_client: Any,
         session_factory: SessionFactory,
     ) -> None:
+        """One of ``graph`` or ``graph_factory`` is required.
+
+        - ``graph``: a pre-compiled graph (tests). Used for every run
+          regardless of the envelope's ``model`` field.
+        - ``graph_factory``: builds a graph per run from the envelope's
+          ``model``. Production wiring — lets each run pick its own LLM.
+        """
+        if (graph is None) == (graph_factory is None):
+            raise ValueError("RunRunner requires exactly one of graph or graph_factory")
         self._graph = graph
+        self._graph_factory = graph_factory
         self._redis = redis_client
         self._session_factory = session_factory
+
+    def _resolve_graph(self, envelope: Mapping[str, Any]) -> Any:
+        """Static graph for tests; factory-built per-run graph in prod."""
+        if self._graph is not None:
+            return self._graph
+        model_raw = envelope.get("model")
+        model: Mapping[str, str] | None = None
+        if isinstance(model_raw, Mapping):
+            model = {
+                "provider": str(model_raw.get("provider", "")),
+                "name": str(model_raw.get("name", "")),
+            }
+        assert self._graph_factory is not None  # noqa: S101 — invariant of __init__
+        return self._graph_factory(model)
 
     # ------------------------------------------------------------------
     # Public entry
@@ -126,10 +154,11 @@ class RunRunner:
             raise ValueError("envelope missing thread_id")
 
         try:
+            graph = self._resolve_graph(envelope)
             if kind == "run.start":
-                self._start(engagement_id, thread_id, envelope)
+                self._start(engagement_id, thread_id, envelope, graph)
             elif kind == "run.resume":
-                self._resume(engagement_id, thread_id, envelope)
+                self._resume(engagement_id, thread_id, envelope, graph)
             else:
                 raise ValueError(f"unknown envelope type: {kind!r}")
         except Exception as exc:
@@ -158,15 +187,18 @@ class RunRunner:
         engagement_id: uuid.UUID,
         thread_id: str,
         envelope: Mapping[str, Any],
+        graph: Any,
     ) -> None:
         prompt = str(envelope.get("prompt") or "")
         snapshots = self._load_scope(engagement_id)
+        model = envelope.get("model") if isinstance(envelope.get("model"), Mapping) else None
         logger.info(
             "worker.run_starting",
             engagement_id=str(engagement_id),
             thread_id=thread_id,
             prompt_len=len(prompt),
             scope_items=len(snapshots),
+            model=model,
         )
         initial_state: dict[str, Any] = {
             "engagement_id": engagement_id,
@@ -178,22 +210,22 @@ class RunRunner:
         }
         config = self._config(thread_id)
 
-        self._audit(
-            engagement_id,
-            "run.started",
-            {"thread_id": thread_id, "prompt": prompt},
-        )
+        started_payload: dict[str, Any] = {"thread_id": thread_id, "prompt": prompt}
+        if model is not None:
+            started_payload["model"] = dict(model)
+        self._audit(engagement_id, "run.started", started_payload)
         self._emit(
             engagement_id,
-            {"type": "run.started", "thread_id": thread_id, "prompt": prompt},
+            {"type": "run.started", **started_payload},
         )
-        self._drive(engagement_id, thread_id, initial_state, config)
+        self._drive(engagement_id, thread_id, initial_state, config, graph)
 
     def _resume(
         self,
         engagement_id: uuid.UUID,
         thread_id: str,
         envelope: Mapping[str, Any],
+        graph: Any,
     ) -> None:
         resume_value: dict[str, Any] = {"approved": bool(envelope.get("approved"))}
         if "edited_args" in envelope and isinstance(envelope["edited_args"], dict):
@@ -208,7 +240,7 @@ class RunRunner:
             approved=resume_value["approved"],
         )
         config = self._config(thread_id)
-        self._drive(engagement_id, thread_id, Command(resume=resume_value), config)
+        self._drive(engagement_id, thread_id, Command(resume=resume_value), config, graph)
 
     # ------------------------------------------------------------------
     # Graph driving + event emission
@@ -220,8 +252,9 @@ class RunRunner:
         thread_id: str,
         input_: Any,
         config: dict[str, Any],
+        graph: Any,
     ) -> None:
-        for chunk in self._graph.stream(input_, config=config):
+        for chunk in graph.stream(input_, config=config):
             for node in chunk:
                 if node == "__interrupt__":
                     continue
@@ -233,7 +266,7 @@ class RunRunner:
                 )
             self._emit_from_chunk(engagement_id, thread_id, chunk)
 
-        snapshot = self._graph.get_state(config)
+        snapshot = graph.get_state(config)
         if not snapshot.next:
             logger.info(
                 "worker.run_completed",

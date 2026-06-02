@@ -10,6 +10,7 @@ from __future__ import annotations
 import signal
 import sys
 import threading
+from collections.abc import Mapping
 
 import redis as redis_lib
 import structlog
@@ -18,7 +19,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal
 from app.orchestrator import build_graph
-from app.orchestrator.llm import default_llm
+from app.orchestrator.llm import default_provider_model, make_llm
 from app.worker.authz import make_db_authorizer
 from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
@@ -33,13 +34,28 @@ def main() -> None:
 
     redis_client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
     checkpointer = build_postgres_checkpointer()
-    graph = build_graph(
-        llm=default_llm(),
-        checkpointer=checkpointer,
-        authorizer=make_db_authorizer(SessionLocal),
-    )
+    authorizer = make_db_authorizer(SessionLocal)
+
+    def graph_factory(model: Mapping[str, str] | None) -> object:
+        """Build a fresh graph per run with the requested LLM.
+
+        Cheap — StateGraph compile is sub-millisecond. The LLM constructor
+        is what costs (network handshake on first invoke), and we'd pay
+        that anyway. Per-run rebuild lets each run pick its own provider.
+        """
+        if model and model.get("provider") and model.get("name"):
+            llm = make_llm(model["provider"], model["name"])
+        else:
+            provider, model_name = default_provider_model()
+            llm = make_llm(provider, model_name)
+        return build_graph(
+            llm=llm,
+            checkpointer=checkpointer,
+            authorizer=authorizer,
+        )
+
     runner = RunRunner(
-        graph=graph,
+        graph_factory=graph_factory,
         redis_client=redis_client,
         session_factory=SessionLocal,
     )

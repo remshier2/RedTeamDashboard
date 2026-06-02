@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import EngagementStatus, ScopeKind
+
+LLMProvider = Literal["anthropic", "openai", "azure", "ollama"]
 
 
 class EngagementCreate(BaseModel):
@@ -69,11 +72,35 @@ class ScopeItemRead(BaseModel):
     updated_at: datetime
 
 
+class RunModel(BaseModel):
+    """Per-run LLM choice — overrides the worker's env defaults."""
+
+    provider: LLMProvider
+    name: str = Field(
+        min_length=1,
+        max_length=128,
+        description=(
+            "Model id passed to the provider's SDK (e.g. 'claude-opus-4-7', "
+            "'gpt-4o-mini'). Not whitelisted server-side — model names churn "
+            "faster than this repo."
+        ),
+    )
+
+
 class RunStart(BaseModel):
     prompt: str = Field(min_length=1)
+    model: RunModel | None = Field(
+        default=None,
+        description=(
+            "Optional per-run LLM. If omitted, the worker uses its env "
+            "defaults (LLM_PROVIDER + provider-specific model env)."
+        ),
+    )
 
 
 class RunStartResponse(BaseModel):
     engagement_id: UUID
     thread_id: UUID
     events_stream: str
+    model: RunModel
+    "The effective model used for this run (echoes the request, or the env default)."

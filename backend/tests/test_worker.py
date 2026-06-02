@@ -381,3 +381,42 @@ def test_active_run_interrupts_then_resumes(
     assert "run.completed" in types
     finding = next(e for e in all_events if e["type"] == "finding.created")
     assert finding["data"]["open_ports"] == [22, 443]
+
+
+# ---------------------------------------------------------------------------
+# RunRunner factory mode (Phase 4: per-run model)
+# ---------------------------------------------------------------------------
+
+
+def test_run_runner_requires_exactly_one_of_graph_or_factory() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        RunRunner(
+            redis_client=None,  # type: ignore[arg-type]
+            session_factory=SessionLocal,
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        RunRunner(
+            graph=object(),
+            graph_factory=lambda _m: object(),
+            redis_client=None,  # type: ignore[arg-type]
+            session_factory=SessionLocal,
+        )
+
+
+def test_run_runner_calls_factory_with_envelope_model() -> None:
+    received: list[Any] = []
+
+    def factory(model: Any) -> Any:
+        received.append(model)
+        return object()
+
+    runner = RunRunner(
+        graph_factory=factory,
+        redis_client=None,  # type: ignore[arg-type]
+        session_factory=SessionLocal,
+    )
+    runner._resolve_graph(
+        {"type": "run.start", "model": {"provider": "anthropic", "name": "x"}}
+    )
+    runner._resolve_graph({"type": "run.start"})  # no model => None
+    assert received == [{"provider": "anthropic", "name": "x"}, None]

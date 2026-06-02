@@ -26,7 +26,7 @@ from app.models import (
     Authorization,
 )
 from app.runs.events import encode_command
-from app.runs.streams import inbound_stream
+from app.runs.streams import inbound_stream, load_run_model
 from app.schemas.approval import ApprovalDecision, ApprovalRead
 
 router = APIRouter()
@@ -156,6 +156,13 @@ def decide_approval(
         resume_payload["edited_args"] = body.edited_args
     if body.reason:
         resume_payload["reason"] = body.reason
+
+    # Carry the original run's model choice forward so the worker uses the
+    # same LLM on resume. Missing only if the cache TTL expired (>6h since
+    # run.start) — in that case the worker falls back to env defaults.
+    cached_model = load_run_model(redis_client, approval.thread_id)
+    if cached_model is not None:
+        resume_payload["model"] = cached_model
 
     redis_client.xadd(
         inbound_stream(approval.engagement_id),

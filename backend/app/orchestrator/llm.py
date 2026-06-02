@@ -1,8 +1,11 @@
 """LLM factory.
 
-``default_llm()`` returns a ChatAnthropic bound to the registry's tool schemas.
-Tests inject a fake by passing ``llm=...`` to ``build_graph``; that path never
-imports langchain-anthropic and so doesn't require an API key.
+``make_llm(provider, model_name)`` returns a tool-bound chat model for the
+requested provider+model. ``default_llm()`` is sugar that reads provider +
+model from ``settings`` — used when a run doesn't pick one explicitly.
+
+Tests inject a fake by passing ``llm=...`` to ``build_graph`` and never reach
+this module.
 """
 from __future__ import annotations
 
@@ -34,55 +37,74 @@ def tool_schemas(registry: Mapping[str, ToolSpec] | None = None) -> list[dict[st
     return schemas
 
 
-def default_llm() -> Any:
-    """Return a chat model bound to the tool registry.
+def make_llm(provider: str, model_name: str) -> Any:
+    """Return a tool-bound chat model for an explicit (provider, model_name).
 
-    Provider is chosen by ``settings.llm_provider`` (env: ``LLM_PROVIDER``):
-
-    - ``anthropic`` (default) — Claude API. Needs ``ANTHROPIC_API_KEY``;
-      model from ``ANTHROPIC_MODEL`` (default ``claude-opus-4-7``).
-    - ``ollama`` — local Ollama. Free; needs the ``ollama`` compose service
-      running and the model pulled (e.g. ``ollama pull llama3.1:8b``).
-    - ``azure`` — Azure OpenAI. Production target on AKS; needs the four
-      ``AZURE_OPENAI_*`` env vars (endpoint, api key, deployment, api version).
-
-    All client libs are imported lazily so swapping providers doesn't require
-    every other lib to be installed. Tests inject a fake via ``build_graph(llm=)``
-    and never reach this function.
+    Client libs are imported lazily so swapping providers doesn't require
+    every other lib to be installed. Caller is responsible for ensuring the
+    relevant API key env var is set — the LLM constructors read it directly.
     """
-    from app.core.config import settings
-
-    provider = settings.llm_provider.lower()
+    provider = provider.lower()
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        llm = ChatAnthropic(model=settings.anthropic_model, max_tokens=4096)
+        llm = ChatAnthropic(model=model_name, max_tokens=4096)
+    elif provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(model=model_name)
     elif provider == "ollama":
         from langchain_ollama import ChatOllama
 
-        llm = ChatOllama(
-            model=settings.ollama_model,
-            base_url=settings.ollama_host,
-        )
+        from app.core.config import settings
+
+        llm = ChatOllama(model=model_name, base_url=settings.ollama_host)
     elif provider == "azure":
         from langchain_openai import AzureChatOpenAI
 
+        from app.core.config import settings
+
         if not (settings.azure_openai_endpoint and settings.azure_openai_deployment):
             raise RuntimeError(
-                "LLM_PROVIDER=azure requires AZURE_OPENAI_ENDPOINT and "
+                "provider=azure requires AZURE_OPENAI_ENDPOINT and "
                 "AZURE_OPENAI_DEPLOYMENT to be set."
             )
+        # `model_name` for Azure is the *deployment* — usually pinned at
+        # deploy time. We accept the run-supplied name as the deployment to
+        # talk to, falling back to the env default.
         llm = AzureChatOpenAI(
             azure_endpoint=settings.azure_openai_endpoint,
             api_key=settings.azure_openai_api_key or None,
-            azure_deployment=settings.azure_openai_deployment,
+            azure_deployment=model_name or settings.azure_openai_deployment,
             api_version=settings.azure_openai_api_version,
         )
     else:
         raise ValueError(
-            f"unknown LLM_PROVIDER {provider!r}; expected one of: "
-            "anthropic, ollama, azure"
+            f"unknown LLM provider {provider!r}; expected one of: "
+            "anthropic, openai, ollama, azure"
         )
 
     return llm.bind_tools(tool_schemas())
+
+
+def default_provider_model() -> tuple[str, str]:
+    """Resolve ``settings``-derived (provider, model) for runs that don't pick one."""
+    from app.core.config import settings
+
+    provider = settings.llm_provider.lower()
+    if provider == "anthropic":
+        return provider, settings.anthropic_model
+    if provider == "openai":
+        return provider, settings.openai_model
+    if provider == "ollama":
+        return provider, settings.ollama_model
+    if provider == "azure":
+        return provider, settings.azure_openai_deployment
+    raise ValueError(f"unknown settings.llm_provider {provider!r}")
+
+
+def default_llm() -> Any:
+    """Tool-bound chat model from settings defaults — backwards-compat shim."""
+    provider, model = default_provider_model()
+    return make_llm(provider, model)

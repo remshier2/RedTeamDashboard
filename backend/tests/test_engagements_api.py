@@ -450,3 +450,113 @@ def test_run_endpoint_404_for_unknown_engagement(client: TestClient) -> None:
         headers=_headers(),
     )
     assert response.status_code == 404
+
+
+def test_run_endpoint_defaults_model_when_body_omits(
+    client: TestClient,
+    redis_client: redis_lib.Redis,
+    cleanup_slugs: list[str],
+) -> None:
+    """Body without model => response + envelope echo the settings default."""
+    eng = _create(client, "Default model")
+    cleanup_slugs.append(eng["slug"])
+
+    response = client.post(
+        f"/engagements/{eng['slug']}/runs",
+        json={"prompt": "go"},
+        headers=_headers(),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["model"]["provider"] == settings.llm_provider
+    assert body["model"]["name"]  # non-empty
+
+    queued = redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))
+    payload = json.loads(queued[-1][1]["data"])
+    assert payload["model"] == body["model"]
+
+
+def test_run_endpoint_passes_through_explicit_model(
+    client: TestClient,
+    redis_client: redis_lib.Redis,
+    cleanup_slugs: list[str],
+) -> None:
+    """Body with model => envelope carries that exact model; redis cache populated."""
+    eng = _create(client, "Explicit model")
+    cleanup_slugs.append(eng["slug"])
+
+    chosen = {"provider": "ollama", "name": "llama3.1:8b"}
+    response = client.post(
+        f"/engagements/{eng['slug']}/runs",
+        json={"prompt": "go", "model": chosen},
+        headers=_headers(),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["model"] == chosen
+
+    payload = json.loads(
+        redis_client.xrange(inbound_stream(uuid.UUID(eng["id"])))[-1][1]["data"]
+    )
+    assert payload["model"] == chosen
+
+    cached = redis_client.hgetall(f"run:model:{body['thread_id']}")
+    assert cached == chosen
+
+
+def test_run_endpoint_rejects_when_provider_key_missing(
+    client: TestClient,
+    cleanup_slugs: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anthropic with no API key returns 400 before queueing."""
+    from app.api import engagements as engagements_api
+
+    # Patch the settings reference imported by the endpoint module so the
+    # precheck sees an empty key without us having to mutate the real env.
+    monkeypatch.setattr(
+        engagements_api.settings, "anthropic_api_key", "", raising=False
+    )
+
+    eng = _create(client, "Missing key")
+    cleanup_slugs.append(eng["slug"])
+
+    response = client.post(
+        f"/engagements/{eng['slug']}/runs",
+        json={
+            "prompt": "go",
+            "model": {"provider": "anthropic", "name": "claude-opus-4-7"},
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 400
+    assert "ANTHROPIC_API_KEY" in response.json()["detail"]
+
+
+def test_run_endpoint_rejects_when_provider_key_is_placeholder(
+    client: TestClient,
+    cleanup_slugs: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bicep-installed PLACEHOLDER value is treated as missing."""
+    from app.api import engagements as engagements_api
+
+    monkeypatch.setattr(
+        engagements_api.settings,
+        "anthropic_api_key",
+        "PLACEHOLDER-set-after-deploy",
+        raising=False,
+    )
+
+    eng = _create(client, "Placeholder key")
+    cleanup_slugs.append(eng["slug"])
+
+    response = client.post(
+        f"/engagements/{eng['slug']}/runs",
+        json={
+            "prompt": "go",
+            "model": {"provider": "anthropic", "name": "claude-opus-4-7"},
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 400

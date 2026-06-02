@@ -235,6 +235,33 @@ def test_decision_denies(
     assert payload["reason"] == "out of window"
 
 
+def test_decision_resume_carries_cached_model_when_present(
+    client: TestClient,
+    db: Session,
+    engagement: Engagement,
+    redis_client: redis_lib.Redis,
+) -> None:
+    """Approvals reuse the run's original LLM choice on resume."""
+    approval = _pending_approval(db, engagement.id)
+    redis_client.delete(inbound_stream(engagement.id))
+    redis_client.hset(
+        f"run:model:{approval.thread_id}",
+        mapping={"provider": "anthropic", "name": "claude-sonnet-4-6"},
+    )
+
+    response = client.post(
+        f"/approvals/{approval.id}/decision",
+        headers={"X-User-Id": "analyst@example.com"},
+        json={"approved": True},
+    )
+    assert response.status_code == 200
+
+    payload = json.loads(
+        redis_client.xrange(inbound_stream(engagement.id))[-1][1]["data"]
+    )
+    assert payload["model"] == {"provider": "anthropic", "name": "claude-sonnet-4-6"}
+
+
 def test_decision_on_already_decided_returns_409(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:
