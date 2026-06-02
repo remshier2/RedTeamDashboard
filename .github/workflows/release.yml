@@ -86,7 +86,6 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://rtd:rtd@localhost:5432/rtd
       REDIS_URL: redis://localhost:6379/0
-      ENV: ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -102,8 +101,31 @@ jobs:
         run: ruff check app tests
       - working-directory: backend
         run: alembic upgrade head
+      # SSE tests bypass the ASGI transport and need a real HTTP server.
+      - name: Start uvicorn for SSE tests
+        working-directory: backend
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+            > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+              echo "uvicorn ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "uvicorn failed to start; log:"
+          cat /tmp/uvicorn.log
+          exit 1
       - working-directory: backend
         run: pytest -q
+      - name: Stop uvicorn
+        if: always()
+        run: |
+          if [ -f /tmp/uvicorn.pid ]; then
+            kill "$(cat /tmp/uvicorn.pid)" 2>/dev/null || true
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -187,7 +209,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/${{ matrix.image.name }}:${{ needs.version.outputs.version }}
 
       - name: Trivy image scan (STRICT — fails the release)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ needs.version.outputs.owner_lc }}/${{ matrix.image.name }}:${{ needs.version.outputs.version }}
           severity: CRITICAL,HIGH
