@@ -7,28 +7,34 @@ Azure tenant, and how to use it day-to-day. Verified end-to-end on
 ## Architecture in one picture
 
 ```
-Your laptop (operator)
-├─ rtd-cli  ──── HTTPS+X-API-Key ───┐
-└─ viewer   ──── HTTPS+X-API-Key ───┤
-                                    ▼
-   ┌──────────────────────────────────────────────┐
-   │  Azure RG: rtd-<env>  (one per deployment)   │
-   │                                              │
-   │  Container App: rtd-<env>-app                │
-   │  ┌─────────┐  ┌─────────┐  ┌──────────────┐  │
-   │  │ backend │  │ worker  │  │ redis:7      │  │
-   │  │ uvicorn │  │ langgr. │  │ localhost    │  │
-   │  │ :8000   │  │         │  │ :6379        │  │
-   │  └────┬────┘  └────┬────┘  └──────┬───────┘  │
-   │       │ 127.0.0.1 between all three          │
-   │       │                                      │
-   │       ▼               ▼                      │
-   │  Postgres FS     Key Vault (RBAC)            │
-   │  (public + AZ    pg pw, db url,              │
-   │   firewall rule) LLM keys, admin key         │
-   │                                              │
-   │  Log Analytics  +  CAE (no VNet)             │
-   └──────────────────────────────────────────────┘
+Operator / teammate
+├─ rtd-cli                ──── HTTPS+X-API-Key ───┐
+└─ Browser → SWA viewer ──┐                       │
+   (Entra-gated)          │                       │
+                          ▼                       ▼
+   ┌──────────────────────────────────────────────────────┐
+   │  Azure RG: rtd-<env>  (one per deployment)           │
+   │                                                      │
+   │  Static Web App: rtd-<env>-viewer                    │
+   │   Entra ID gated · serves the Next.js static bundle  │
+   │                          │                           │
+   │   reads from ┄┄┄┄┄┄┄┄┄┄┄┄┘                           │
+   │                                                      │
+   │  Container App: rtd-<env>-app                        │
+   │  ┌─────────┐  ┌─────────┐  ┌──────────────┐          │
+   │  │ backend │  │ worker  │  │ redis:7      │          │
+   │  │ uvicorn │  │ langgr. │  │ localhost    │          │
+   │  │ :8000   │  │         │  │ :6379        │          │
+   │  └────┬────┘  └────┬────┘  └──────┬───────┘          │
+   │       │ 127.0.0.1 between all three                  │
+   │       │                                              │
+   │       ▼               ▼                              │
+   │  Postgres FS     Key Vault (RBAC)                    │
+   │  (public + AZ    pg pw, db url,                      │
+   │   firewall rule) LLM keys, admin key                 │
+   │                                                      │
+   │  Log Analytics  +  CAE (no VNet)                     │
+   └──────────────────────────────────────────────────────┘
 ```
 
 **Why one app with three containers:** Container Apps' internal env VIP
@@ -50,6 +56,8 @@ az account set --subscription rtd-personal   # whatever your sub is named
 openssl version           # for the install script to generate the pg pw
 python3 --version         # install.sh uses python3 for JSON parsing
 gh --version              # only needed if you'll cut releases
+node --version            # 18+; needed for the SWA CLI viewer deploy step
+                          # (npx fetches @azure/static-web-apps-cli on first run)
 
 # Pin your subscription so you don't accidentally deploy elsewhere
 az account show --query 'name'
@@ -170,11 +178,52 @@ rtd findings list acme-q3-pentest --severity high
 rtd tail acme-q3-pentest              # late-join an in-flight stream
 ```
 
-### Viewer (read-only browser UI)
+### Viewer (browser GUI — full CLI parity)
 
-Two ways to run it:
+The kit provisions an **Azure Static Web App** in your RG and pushes the
+viewer bundle to it. The SWA is Entra-ID-gated by default — anonymous
+visitors get bounced to your tenant's AAD login before they can load the
+page. The viewer's URL is printed at the end of `install.sh`:
 
-**Locally** (single operator, your laptop):
+```
+Viewer URL:  https://rtd-<env>-viewer-<hash>.<region>.azurestaticapps.net
+```
+
+**Sharing it with a teammate.** install.sh also prints a magic link
+that pre-fills the source form so the tester only needs to paste their
+own API key:
+
+```
+https://<viewer>/sources?url=https%3A%2F%2Frtd-prod-app...&name=prod
+```
+
+Each tester mints their own scoped key:
+
+```bash
+# CLI scope: full GUI control (create/scope/run/approve). For most testers.
+script -qc "az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+  --command 'python -m app.scripts.mint_api_key --name nasir-browser --scope cli'" /dev/null
+
+# Viewer scope: read-only — buttons hide in the UI.
+script -qc "az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+  --command 'python -m app.scripts.mint_api_key --name auditor-laptop --scope viewer'" /dev/null
+```
+
+Tester opens the magic link, signs into Entra in YOUR tenant, pastes
+their key → engagement list renders, scope-aware buttons reflect their
+key's permissions.
+
+**Two layers of auth, intentionally separated:**
+
+| Layer | Controls |
+|---|---|
+| Entra ID (SWA-level) | Who can *load* the viewer at all |
+| API key in localStorage (backend-level) | What data the page can read/mutate |
+
+A signed-in Entra user still needs a valid API key to see any tenant
+data. Revoking either layer cuts access independently.
+
+**Local development.** For hacking on the viewer itself:
 
 ```bash
 cd RedTeamDashboard
@@ -182,29 +231,8 @@ docker compose -f infra/docker-compose.yml up -d frontend
 # Browser → http://localhost:3001
 ```
 
-Mint a viewer-scoped key first so the viewer only gets read perms:
-
-```bash
-script -qc "az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
-  --command 'python -m app.scripts.mint_api_key --name viewer-laptop --scope viewer'" /dev/null
-```
-
-Then in the viewer: **Add a source** → paste the URL + the viewer key →
-engagements/scope/findings/events render.
-
-**Centrally hosted** (team-shared, anyone on a known origin):
-
-Deploy `ghcr.io/donpercival0x45/rtd-viewer:<ver>` anywhere (Vercel, Azure
-Static Web Apps, another Container App). It's pure Next.js with no
-backend of its own. The viewer's URL goes into the kit's
-`corsAllowOrigins` param so the tenant backend accepts it:
-
-```bash
-# Edit infra/azure-kit/main.bicepparam:
-#   param corsAllowOrigins = 'https://viewer.example.com,http://localhost:3001'
-# Then re-run the installer to apply (Bicep is idempotent):
-./infra/azure-kit/scripts/install.sh --env prod --location centralus --yes
-```
+`http://localhost:3001` is in the default `extraCorsAllowOrigins` so the
+deployed backend accepts requests from it.
 
 ## Operations / troubleshooting
 

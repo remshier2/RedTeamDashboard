@@ -138,7 +138,7 @@ export default function EngagementListPage() {
                 >
                   <div>
                     <Link
-                      href={`/e/${eng.slug}`}
+                      href={`/e?slug=${encodeURIComponent(eng.slug)}`}
                       className="font-medium hover:underline"
                     >
                       {eng.name}

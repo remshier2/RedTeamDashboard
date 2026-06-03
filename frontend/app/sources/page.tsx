@@ -1,11 +1,15 @@
 "use client";
 
 // Sources page — manage the list of tenant backends this browser can read
-// from. Plaintext URL + API key in localStorage; the CLI does the same
-// (~/.config/rtd/config.toml). Mutations on the backend still flow through
-// the CLI; the viewer never writes.
+// from. URL + API key kept in localStorage; the CLI does the same
+// (~/.config/rtd/config.toml).
+//
+// Magic-link UX: the kit's install.sh prints a URL of the form
+// `/sources?url=<backend>&name=<label>` so an operator only needs to
+// paste their own minted API key. The query params pre-fill the form.
 
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,7 +25,7 @@ import { Label } from "@/components/ui/label";
 import { useSources } from "@/lib/source-context";
 import { newSourceId } from "@/lib/sources";
 
-export default function SourcesPage() {
+function SourcesPageInner() {
   const {
     ready,
     store,
@@ -29,12 +33,22 @@ export default function SourcesPage() {
     removeSource,
     setDefaultSource,
   } = useSources();
+  const params = useSearchParams();
 
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [makeDefault, setMakeDefault] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Magic link: ?url=&name= pre-fills the form so an invited tester only
+  // needs to paste their key. Runs once per page load.
+  useEffect(() => {
+    const linkUrl = params.get("url");
+    const linkName = params.get("name");
+    if (linkUrl) setUrl(linkUrl);
+    if (linkName) setName(linkName);
+  }, [params]);
 
   if (!ready) {
     return (
@@ -212,5 +226,18 @@ export default function SourcesPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export default function SourcesPage() {
+  // useSearchParams() requires a Suspense boundary in static export builds.
+  return (
+    <Suspense
+      fallback={
+        <p className="text-sm text-muted-foreground">Loading sources…</p>
+      }
+    >
+      <SourcesPageInner />
+    </Suspense>
   );
 }

@@ -28,7 +28,7 @@ param imageTag = 'latest'
 param llmProvider = 'anthropic'
 param anthropicModel = 'claude-opus-4-7'
 
-// Origins allowed to call this tenant's backend from the browser. Append
-// the central viewer's URL (e.g. "https://viewer.example.com") so the
-// Phase 6 viewer can read findings/events/grants directly. Comma-separated.
-param corsAllowOrigins = 'http://localhost:3001,http://127.0.0.1:3001'
+// Extra CORS allow-origins. The in-tenant Static Web App viewer URL is
+// auto-appended by main.bicep — set this ONLY if you want additional
+// origins (e.g. a self-hosted viewer at a custom domain). Comma-separated.
+param extraCorsAllowOrigins = 'http://localhost:3001,http://127.0.0.1:3001'

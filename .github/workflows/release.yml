@@ -312,28 +312,76 @@ jobs:
           # token to the PyPI project via pre-configured trust on pypi.org.
 
   # ---------------------------------------------------------------------------
+  # Build the static viewer bundle for Azure Static Web Apps. End users'
+  # install.sh downloads this zip + uploads it to their SWA resource — they
+  # don't need npm or a build pipeline locally.
+  # ---------------------------------------------------------------------------
+  publish-viewer-static:
+    name: Publish viewer static bundle
+    runs-on: ubuntu-latest
+    needs: [version]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build static export
+        working-directory: frontend
+        env:
+          NEXT_OUTPUT: export
+          NODE_ENV: production
+        run: npm run build
+
+      - name: Zip the bundle
+        working-directory: frontend
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          cd out && zip -qr "../../rtd-viewer-static-${TAG}.zip" . && cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtd-viewer-static
+          path: rtd-viewer-static-*.zip
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
   # Bundle the Azure deployment kit + cut the GitHub Release. Runs last so the
   # release page links to a kit whose images are already pushable.
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: [version, publish, publish-worker-alias, publish-cli]
+    needs: [version, publish, publish-worker-alias, publish-cli, publish-viewer-static]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download viewer static bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rtd-viewer-static
+          path: .
 
       - name: Package the Azure kit
         run: |
           TAG="${{ needs.version.outputs.tag }}"
           tar -czf "rtd-azure-kit-${TAG}.tar.gz" -C infra azure-kit
 
-      - name: Create release + attach kit tarball
+      - name: Create release + attach kit tarball + viewer bundle
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           name: ${{ needs.version.outputs.tag }}
           tag_name: ${{ needs.version.outputs.tag }}
-          files: rtd-azure-kit-*.tar.gz
+          files: |
+            rtd-azure-kit-*.tar.gz
+            rtd-viewer-static-*.zip
           body: |
             ## Images
 

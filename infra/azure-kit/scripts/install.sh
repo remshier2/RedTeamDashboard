@@ -149,10 +149,13 @@ RG_OUT="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdi
 APP_FQDN="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["appFqdn"]["value"])')"
 APP_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["appName"]["value"])')"
 KV_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["keyVaultName"]["value"])')"
+VIEWER_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["viewerName"]["value"])')"
+VIEWER_URL="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys.stdin)["viewerUrl"]["value"])')"
 
 echo "    resource group:  $RG_OUT"
 echo "    app FQDN:        https://$APP_FQDN"
 echo "    key vault:       $KV_NAME"
+echo "    viewer URL:      $VIEWER_URL"
 
 # ---------------------------------------------------------------------------
 # Wait for backend health
@@ -185,6 +188,52 @@ for i in {1..40}; do
 done
 
 # ---------------------------------------------------------------------------
+# Deploy the viewer static bundle to the Static Web App
+# ---------------------------------------------------------------------------
+#
+# We download the prebuilt viewer bundle from this release's GitHub assets
+# and upload it via the SWA deployment token. No npm / build pipeline
+# needed on the operator's machine — just `unzip` and the SWA CLI (npx).
+#
+# Skipped when --image-tag is `latest` and we have no way to know which
+# release's bundle to fetch: operator can re-run with --image-tag <ver>
+# after picking a version.
+bold "[5.5/6] Deploying viewer to Static Web App…"
+if ! command -v npx >/dev/null 2>&1; then
+    red "    skipped — npx not on PATH; install Node.js 18+ then re-run"
+    red "    or deploy manually: SWA name=$VIEWER_NAME, see docs/DEPLOY.md"
+    SWA_SKIPPED=true
+elif [[ "$IMAGE_TAG" == "latest" ]]; then
+    red "    skipped — running with --image-tag latest. Re-run with a pinned"
+    red "    version (e.g. --image-tag v0.2.0) to fetch the matching viewer bundle."
+    SWA_SKIPPED=true
+else
+    SWA_SKIPPED=false
+    BUNDLE_TAG="$IMAGE_TAG"
+    [[ "$BUNDLE_TAG" != v* ]] && BUNDLE_TAG="v$BUNDLE_TAG"
+    BUNDLE_URL="https://github.com/DonPercival0x45/RedTeamDashboard/releases/download/$BUNDLE_TAG/rtd-viewer-static-$BUNDLE_TAG.zip"
+    TMP_DIR="$(mktemp -d)"
+    echo "    downloading $BUNDLE_URL"
+    if ! curl -fsSL -o "$TMP_DIR/viewer.zip" "$BUNDLE_URL"; then
+        red "    download failed; the release may not have the static bundle yet"
+        red "    (only v0.2.0+ ships it). Re-run with a newer --image-tag or"
+        red "    deploy the bundle yourself — see docs/DEPLOY.md"
+        SWA_SKIPPED=true
+    else
+        unzip -q "$TMP_DIR/viewer.zip" -d "$TMP_DIR/viewer"
+        DEPLOY_TOKEN="$(az staticwebapp secrets list -n "$VIEWER_NAME" -g "$RG_OUT" --query 'properties.apiKey' -o tsv)"
+        # SWA CLI ships standalone via npm; npx fetches it on first run.
+        SWA_CLI_TELEMETRY_OPTOUT=1 npx -y @azure/static-web-apps-cli@latest \
+            deploy "$TMP_DIR/viewer" \
+            --deployment-token "$DEPLOY_TOKEN" \
+            --env production \
+            --no-use-keychain
+        green "    viewer deployed."
+    fi
+    rm -rf "$TMP_DIR"
+fi
+
+# ---------------------------------------------------------------------------
 # Manual post-deploy steps
 # ---------------------------------------------------------------------------
 
@@ -214,10 +263,24 @@ echo
 green "Deploy complete. Summary:"
 echo
 echo "  API URL:          https://$APP_FQDN"
+echo "  Viewer URL:       $VIEWER_URL"
 echo "  Resource group:   $RG_OUT"
 echo "  Key Vault:        $KV_NAME"
 echo "  Tenant:           $TENANT_ID"
 echo "  Postgres pw saved in KV at: secret/postgres-password"
 echo
-echo "Next: run the bootstrap commands above, then point the central viewer at"
-echo "      https://$APP_FQDN with the admin API key you just minted."
+if [[ "$SWA_SKIPPED" != "true" ]]; then
+    # Magic link: pre-fills the URL + name in the viewer's /sources form
+    # so the operator only pastes their API key. Share this with teammates.
+    ENC_URL="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe=''))" "https://$APP_FQDN")"
+    ENC_NAME="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1], safe=''))" "$ENV_NAME")"
+    echo "Quick-start link for testers (pre-fills the source form):"
+    blue "  $VIEWER_URL/sources?url=$ENC_URL&name=$ENC_NAME"
+    echo
+    echo "Each tester also needs their own scoped API key — mint one with:"
+    echo "  az containerapp exec -n $APP_NAME -g $RG_OUT --container backend \\"
+    echo "      --command 'python -m app.scripts.mint_api_key --name <tester> --scope cli'"
+else
+    echo "Viewer wasn't deployed. Once it's pushed, the magic-link form is at:"
+    echo "  $VIEWER_URL/sources?url=https%3A%2F%2F$APP_FQDN&name=$ENV_NAME"
+fi

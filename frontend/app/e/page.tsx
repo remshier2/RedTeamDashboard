@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,12 +28,11 @@ import { subscribeToEvents } from "@/lib/events";
 import { useSources } from "@/lib/source-context";
 import type { Engagement } from "@/lib/types";
 
-export default function EngagementDetailPage({
-  params,
-}: {
-  params: Promise<{ slug: string }>;
-}) {
-  const { slug } = use(params);
+// Slug comes from `?slug=...` instead of a dynamic [slug] path segment so
+// the page can be statically exported for Azure Static Web Apps (dynamic
+// route segments need build-time params which we don't have).
+
+function EngagementDetail({ slug }: { slug: string }) {
   const { current } = useSources();
   const canWrite = current?.scope !== "viewer";
 
@@ -44,8 +44,6 @@ export default function EngagementDetailPage({
   const [streamState, setStreamState] = useState<
     "connecting" | "open" | "closed"
   >("connecting");
-  // Bumped after the approval modal closes (a new grant may have been created
-  // via "remember") so the grants card refetches.
   const [grantsRefreshKey, setGrantsRefreshKey] = useState(0);
 
   const seenSseIds = useRef<Set<string>>(new Set());
@@ -247,5 +245,35 @@ export default function EngagementDetailPage({
         />
       )}
     </div>
+  );
+}
+
+function EngagementGate() {
+  const params = useSearchParams();
+  const slug = params.get("slug");
+  if (!slug) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Missing <code>?slug=</code> parameter. Go back to{" "}
+        <Link href="/" className="underline">
+          engagements
+        </Link>
+        .
+      </p>
+    );
+  }
+  return <EngagementDetail slug={slug} />;
+}
+
+export default function EngagementDetailPage() {
+  // useSearchParams() requires a Suspense boundary under static export.
+  return (
+    <Suspense
+      fallback={
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      }
+    >
+      <EngagementGate />
+    </Suspense>
   );
 }

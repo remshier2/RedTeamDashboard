@@ -1,0 +1,40 @@
+{
+  "_comment": "Azure Static Web Apps config for the RTD viewer. Gates the whole site behind Entra ID — anonymous visitors are bounced to the AAD login on the customer's tenant. Identity is presentation-only; the data plane still uses backend API keys.",
+  "auth": {
+    "rolesSource": "/api/roles",
+    "identityProviders": {
+      "azureActiveDirectory": {
+        "registration": {
+          "openIdIssuer": "https://login.microsoftonline.com/common/v2.0",
+          "clientIdSettingName": "AAD_CLIENT_ID",
+          "clientSecretSettingName": "AAD_CLIENT_SECRET"
+        }
+      }
+    }
+  },
+  "routes": [
+    {
+      "route": "/login",
+      "rewrite": "/.auth/login/aad",
+      "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/logout",
+      "redirect": "/.auth/logout"
+    },
+    {
+      "route": "/*",
+      "allowedRoles": ["authenticated"]
+    }
+  ],
+  "responseOverrides": {
+    "401": {
+      "redirect": "/.auth/login/aad?post_login_redirect_uri=/",
+      "statusCode": 302
+    }
+  },
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/_next/*", "/images/*.{png,jpg,ico,svg}", "/*.{css,js,json}"]
+  }
+}

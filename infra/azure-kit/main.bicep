@@ -9,6 +9,8 @@
 //     redis. They share `127.0.0.1` so no cross-app internal TCP is needed.
 //     Single replica (minReplicas=maxReplicas=1) — sharing localhost requires
 //     same pod.
+//   - Azure Static Web App hosting the viewer (gated by Entra ID). The kit's
+//     install.sh pushes the prebuilt static bundle after Bicep returns.
 //
 // What's NOT here:
 //   - The viewer: hosted centrally; the operator plugs in this deployment's
@@ -54,8 +56,8 @@ param llmProvider string = 'anthropic'
 @description('Default Anthropic model when the run uses Anthropic without picking one. Per-run override wins.')
 param anthropicModel string = 'claude-opus-4-7'
 
-@description('Comma-separated CORS allow-origins for the browser viewer. Set this to the central viewer\'s URL (e.g. "https://viewer.example.com") so the browser can call this tenant\'s backend (Phase 6).')
-param corsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
+@description('Extra CORS allow-origins for the browser viewer. The kit auto-appends the in-tenant Static Web App URL; use this only to add other origins (e.g. a self-hosted viewer at a custom domain). Comma-separated.')
+param extraCorsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 
 var namePrefix = 'rtd-${env}'
 var tags = {
@@ -104,6 +106,16 @@ module caenv 'modules/containerappsenv.bicep' = {
   }
 }
 
+module viewer 'modules/viewer.bicep' = {
+  name: 'viewer'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
 module kv 'modules/keyvault.bicep' = {
   name: 'keyvault'
   scope: rg
@@ -134,7 +146,9 @@ module apps 'modules/containerapps.bicep' = {
     workerImage: workerImage
     llmProvider: llmProvider
     anthropicModel: anthropicModel
-    corsAllowOrigins: corsAllowOrigins
+    // Auto-append the in-tenant viewer's URL so the browser at that origin
+    // can call the backend without any manual CORS plumbing.
+    corsAllowOrigins: '${extraCorsAllowOrigins},${viewer.outputs.url}'
   }
 }
 
@@ -143,3 +157,5 @@ output appFqdn string = apps.outputs.appFqdn
 output appName string = apps.outputs.appName
 output keyVaultName string = kv.outputs.name
 output postgresFqdn string = postgres.outputs.fqdn
+output viewerName string = viewer.outputs.name
+output viewerUrl string = viewer.outputs.url
