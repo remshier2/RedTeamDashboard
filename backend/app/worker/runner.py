@@ -33,11 +33,13 @@ from app.models import (
     ApprovalStatus,
     AuditLog,
     Finding,
+    FindingPhase,
     RiskLevel,
     ScopeItem,
     Severity,
 )
 from app.orchestrator.scope import ScopeSnapshot
+from app.orchestrator.tools import phase_for_tool
 from app.runs.events import encode_event
 from app.runs.streams import outbound_stream
 
@@ -339,6 +341,8 @@ class RunRunner:
                         "severity": row.severity.value,
                         "title": row.title,
                         "finding_id": str(row.id),
+                        "phase": row.phase.value,
+                        "status": row.status.value,
                     },
                 )
             for denial in update.get("denials") or []:
@@ -436,6 +440,8 @@ class RunRunner:
                 details={"thread_id": thread_id, "args": args, **data},
                 source_tool=tool,
                 target=target,
+                phase=FindingPhase(phase_for_tool(tool)),
+                # status defaults to pending_validation — analyst must approve.
             )
             session.add(row)
             session.commit()

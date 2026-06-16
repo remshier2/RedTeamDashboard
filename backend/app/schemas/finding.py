@@ -14,7 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.models import Severity
+from app.models import FindingPhase, FindingStatus, Severity
 
 
 class FindingRead(BaseModel):
@@ -26,4 +26,14 @@ class FindingRead(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     severity: Severity
     title: str
+    phase: FindingPhase
+    status: FindingStatus
+    validated_at: datetime | None = None
     created_at: datetime
+
+
+class FindingValidate(BaseModel):
+    # 'validated' promotes to report-eligible; the others remove it from the
+    # report while keeping an audit trail.
+    decision: FindingStatus = FindingStatus.validated
+    reason: str | None = None

@@ -24,6 +24,7 @@ from app.models import (
     AuditLog,
     Engagement,
     Finding,
+    FindingStatus,
     ScopeItem,
 )
 
@@ -58,10 +59,14 @@ def engagement_report(
             .order_by(ScopeItem.created_at)
         ).scalars()
     )
+    # Only validated findings are report-eligible (Phase 8 validation gate).
     findings = list(
         session.execute(
             select(Finding)
-            .where(Finding.engagement_id == eng.id)
+            .where(
+                Finding.engagement_id == eng.id,
+                Finding.status == FindingStatus.validated,
+            )
             .order_by(Finding.created_at.desc())
         ).scalars()
     )

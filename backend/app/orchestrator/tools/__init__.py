@@ -162,6 +162,26 @@ def get_tool(name: str, registry: Mapping[str, ToolSpec] | None = None) -> ToolS
     return (registry or _TOOLS).get(name)
 
 
+# Tool → engagement phase, for tagging the findings a tool produces (Phase 8).
+# Passive recon → OSINT; active enumeration → Vuln Scan. Unknown → general.
+_TOOL_PHASE: dict[str, str] = {
+    "subfinder": "osint",
+    "crt_sh": "osint",
+    "dns_lookup": "osint",
+    "whois_lookup": "osint",
+    "httpx_probe": "osint",
+    "reverse_dns": "osint",
+    "portscan": "vuln_scan",
+    "subnet_sweep": "vuln_scan",
+    "service_detect": "vuln_scan",
+}
+
+
+def phase_for_tool(name: str | None) -> str:
+    """Engagement phase a tool's findings belong to. Falls back to 'general'."""
+    return _TOOL_PHASE.get(name or "", "general")
+
+
 def all_tools(registry: Mapping[str, ToolSpec] | None = None) -> list[ToolSpec]:
     return list((registry or _TOOLS).values())
 

@@ -38,7 +38,16 @@ from sqlalchemy import select, text
 
 from app.api.deps import CurrentUser, DbSession, RedisClient
 from app.core.config import settings
-from app.models import ActorType, AuditLog, Engagement, EngagementStatus, Finding, ScopeItem
+from app.models import (
+    ActorType,
+    AuditLog,
+    Engagement,
+    EngagementStatus,
+    Finding,
+    FindingPhase,
+    FindingStatus,
+    ScopeItem,
+)
 from app.orchestrator.llm import default_provider_model
 from app.runs.events import encode_command
 from app.runs.streams import inbound_stream, outbound_stream, store_run_model
@@ -53,7 +62,7 @@ from app.schemas.engagement import (
     ScopeItemRead,
     ScopeItemUpdate,
 )
-from app.schemas.finding import FindingRead
+from app.schemas.finding import FindingRead, FindingValidate
 
 router = APIRouter()
 
@@ -118,6 +127,9 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "data": details,
         "severity": f.severity,
         "title": f.title,
+        "phase": f.phase,
+        "status": f.status,
+        "validated_at": f.validated_at,
         "created_at": f.created_at,
     }
 
@@ -335,14 +347,65 @@ def delete_scope_item(
     "/engagements/{slug}/findings",
     response_model=list[FindingRead],
 )
-def list_findings(slug: str, session: DbSession) -> list[dict[str, Any]]:
+def list_findings(
+    slug: str,
+    session: DbSession,
+    phase: Annotated[FindingPhase | None, Query(description="Filter by phase.")] = None,
+    status: Annotated[
+        FindingStatus | None, Query(description="Filter by validation status.")
+    ] = None,
+) -> list[dict[str, Any]]:
     eng = _get_engagement_or_404(session, slug)
-    rows = session.execute(
-        select(Finding)
-        .where(Finding.engagement_id == eng.id)
-        .order_by(Finding.created_at.desc())
-    ).scalars()
+    stmt = select(Finding).where(Finding.engagement_id == eng.id)
+    if phase is not None:
+        stmt = stmt.where(Finding.phase == phase)
+    if status is not None:
+        stmt = stmt.where(Finding.status == status)
+    rows = session.execute(stmt.order_by(Finding.created_at.desc())).scalars()
     return [_finding_to_read(f) for f in rows]
+
+
+@router.post(
+    "/findings/{finding_id}/validate",
+    response_model=FindingRead,
+)
+def validate_finding(
+    finding_id: uuid.UUID,
+    body: FindingValidate,
+    session: DbSession,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    """Promote/reject a pending finding. ``validated`` makes it report-eligible;
+    ``rejected`` / ``false_positive`` keep it for audit but exclude it."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    finding.status = body.decision
+    if body.decision is FindingStatus.validated:
+        finding.validated_by = user.id
+        finding.validated_at = datetime.now(tz=UTC)
+    else:
+        # Re-deciding away from validated clears the validation stamp.
+        finding.validated_by = None
+        finding.validated_at = None
+
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="finding.validated",
+            payload={
+                "finding_id": str(finding.id),
+                "decision": body.decision.value,
+                "reason": body.reason,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(finding)
+    return _finding_to_read(finding)
 
 
 # ---------------------------------------------------------------------------

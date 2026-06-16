@@ -23,6 +23,8 @@ from app.models import (
     Engagement,
     EngagementStatus,
     Finding,
+    FindingPhase,
+    FindingStatus,
     RiskLevel,
     ScopeItem,
     ScopeKind,
@@ -74,6 +76,9 @@ def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
             details={"subdomains": ["www.acme.com", "mail.acme.com"]},
             source_tool="subfinder",
             target="acme.com",
+            phase=FindingPhase.osint,
+            # Report only includes validated findings (Phase 8 gate).
+            status=FindingStatus.validated,
         )
     )
     db.add(
