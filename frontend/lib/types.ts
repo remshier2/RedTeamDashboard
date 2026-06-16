@@ -81,6 +81,19 @@ export interface Approval {
 
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
 
+export type FindingPhase =
+  | "osint"
+  | "vuln_scan"
+  | "exploit"
+  | "phishing"
+  | "general";
+
+export type FindingValidationStatus =
+  | "pending_validation"
+  | "validated"
+  | "rejected"
+  | "false_positive";
+
 // Persisted finding as returned by GET /engagements/{slug}/findings. Mirrors
 // the SSE `finding.created` event's tool/args/data so the table can render
 // hydrated and live findings the same way.
@@ -93,6 +106,9 @@ export interface Finding {
   data: Record<string, unknown>;
   severity: Severity;
   title: string;
+  phase: FindingPhase;
+  status: FindingValidationStatus;
+  validated_at: string | null;
   created_at: string;
 }
 
@@ -150,6 +166,8 @@ export type RunEvent =
       severity: Severity;
       title: string | null;
       finding_id: string;
+      phase: FindingPhase;
+      status: FindingValidationStatus;
     }
   | { type: "run.completed"; thread_id: string }
   | { type: "run.errored"; thread_id: string; error: string };

@@ -3,14 +3,6 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import {
-  Crosshair,
-  DollarSign,
-  FileText,
-  Fish,
-  Radar,
-  Search,
-} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,7 +10,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ApprovalsModal,
   type PendingApproval,
@@ -26,50 +17,36 @@ import {
 import { DownloadReport } from "@/components/download-report";
 import { EventLog, type LoggedEvent } from "@/components/event-log";
 import {
-  FindingsTable,
-  type FindingRow,
-} from "@/components/findings-table";
+  EngagementNav,
+  type EngagementView,
+} from "@/components/engagement-nav";
+import { FindingsView } from "@/components/findings-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
 import { archiveEngagement, getEngagement, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
-import type { Engagement } from "@/lib/types";
+import type { Engagement, Finding } from "@/lib/types";
 
-// Slug comes from `?slug=...` instead of a dynamic [slug] path segment so
-// the page can be statically exported for Azure Static Web Apps (dynamic
-// route segments need build-time params which we don't have). The active
-// phase tab rides in `?tab=...` for the same reason — deep-linkable, static.
+// Slug + active view ride in the query string (?slug=&view=) so the page can be
+// statically exported for Azure SWA (no dynamic route segments). The engagement
+// opens on Findings — the work product is front and center (see CHARTER).
 
-const PHASE_TABS = [
-  { value: "osint", label: "OSINT Recon", Icon: Search },
-  { value: "vuln", label: "Vuln Scan", Icon: Radar },
-  { value: "exploit", label: "Exploit", Icon: Crosshair },
-  { value: "phishing", label: "Phishing", Icon: Fish },
-  { value: "results", label: "Results", Icon: FileText },
-  { value: "costs", label: "Costs", Icon: DollarSign },
-] as const;
+const VALID_VIEWS = new Set<EngagementView>([
+  "findings",
+  "entities",
+  "report",
+  "costs",
+  "scope",
+]);
 
-const VALID_TABS: Set<string> = new Set(PHASE_TABS.map((t) => t.value));
-
-// Shell placeholder for tabs whose data model lands in a later phase. Keeps
-// the structure honest about what's wired vs. roadmapped.
-function PhasePanel({
-  title,
-  blurb,
-  roadmap,
-}: {
-  title: string;
-  blurb: string;
-  roadmap: string;
-}) {
+function PlaceholderPanel({ title, roadmap }: { title: string; roadmap: string }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">{blurb}</p>
+      <CardContent>
         <p className="text-xs text-muted-foreground/70">
           <span className="text-critical">●</span> {roadmap}
         </p>
@@ -84,20 +61,23 @@ function EngagementDetail({ slug }: { slug: string }) {
   // Single-tenant: any signed-in analyst can act on the engagement.
   const canWrite = true;
 
-  const tabParam = params.get("tab");
-  const activeTab = tabParam && VALID_TABS.has(tabParam) ? tabParam : "osint";
-  const setTab = useCallback(
-    (value: string) => {
-      const next = new URLSearchParams(params.toString());
-      next.set("tab", value);
-      router.replace(`/e?${next.toString()}`, { scroll: false });
+  const viewParam = params.get("view");
+  const view: EngagementView =
+    viewParam && VALID_VIEWS.has(viewParam as EngagementView)
+      ? (viewParam as EngagementView)
+      : "findings";
+  const setView = useCallback(
+    (next: EngagementView) => {
+      const p = new URLSearchParams(params.toString());
+      p.set("view", next);
+      router.replace(`/e?${p.toString()}`, { scroll: false });
     },
     [params, router],
   );
 
   const [engagement, setEngagement] = useState<Engagement | null>(null);
   const [events, setEvents] = useState<LoggedEvent[]>([]);
-  const [findings, setFindings] = useState<FindingRow[]>([]);
+  const [findings, setFindings] = useState<Finding[]>([]);
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<
@@ -128,19 +108,9 @@ function EngagementDetail({ slug }: { slug: string }) {
     listFindings(slug)
       .then((rows) => {
         if (cancelled) return;
-        const hydrated: FindingRow[] = rows.map((r) => ({
-          id: r.id,
-          thread_id: r.thread_id ?? "",
-          tool: r.tool ?? "",
-          target: r.target,
-          severity: r.severity,
-          title: r.title,
-          args: r.args ?? {},
-          data: r.data ?? {},
-        }));
         setFindings((prev) => {
           const seen = new Set(prev.map((f) => f.id));
-          return [...prev, ...hydrated.filter((f) => !seen.has(f.id))];
+          return [...prev, ...rows.filter((f) => !seen.has(f.id))];
         });
       })
       .catch(() => {
@@ -150,6 +120,17 @@ function EngagementDetail({ slug }: { slug: string }) {
       cancelled = true;
     };
   }, [slug]);
+
+  // Merge a validated/updated finding back into the list.
+  const upsertFinding = useCallback((f: Finding) => {
+    setFindings((prev) => {
+      const idx = prev.findIndex((x) => x.id === f.id);
+      if (idx === -1) return [f, ...prev];
+      const next = [...prev];
+      next[idx] = f;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -169,22 +150,24 @@ function EngagementDetail({ slug }: { slug: string }) {
         );
 
         if (event.type === "finding.created") {
+          const rowId = event.finding_id || id;
           setFindings((prev) => {
-            const rowId = event.finding_id || id;
             if (prev.some((f) => f.id === rowId)) return prev;
-            return [
-              {
-                id: rowId,
-                thread_id: event.thread_id,
-                tool: event.tool,
-                target: event.target,
-                severity: event.severity,
-                title: event.title,
-                args: event.args,
-                data: event.data,
-              },
-              ...prev,
-            ];
+            const created: Finding = {
+              id: rowId,
+              thread_id: event.thread_id,
+              tool: event.tool,
+              target: event.target,
+              args: event.args,
+              data: event.data,
+              severity: event.severity,
+              title: event.title ?? event.tool,
+              phase: event.phase,
+              status: event.status,
+              validated_at: null,
+              created_at: new Date().toISOString(),
+            };
+            return [created, ...prev];
           });
         } else if (event.type === "approval.pending" && canWrite) {
           setPending({
@@ -229,136 +212,90 @@ function EngagementDetail({ slug }: { slug: string }) {
 
   return (
     <div className="space-y-6">
-      {/* Engagement header — name, status, controls. Engagement-wide, above
-          the phase tabs. */}
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
-          <div>
-            <Link
-              href="/"
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              ← all engagements
-            </Link>
-            <CardTitle className="mt-2 text-xl">{engagement.name}</CardTitle>
-            <p className="mt-1 font-mono text-xs text-muted-foreground">
-              {engagement.slug} · {engagement.status} · stream {streamState}
-            </p>
-          </div>
-          {canWrite && engagement.status === "active" && (
-            <Button variant="outline" size="sm" onClick={onArchive}>
-              Archive
-            </Button>
-          )}
-        </CardHeader>
-        {error && (
-          <CardContent>
-            <p className="text-sm text-critical">{error}</p>
-          </CardContent>
-        )}
-      </Card>
-
-      {/* Strategic command-center — placeholder until Phase 9. */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Strategic overview
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-xs text-muted-foreground/70">
-            <span className="text-critical">●</span> Phase 9 — the Strategic
-            watcher surfaces the timeline (happened · happening · next) and a
-            priced suggestions feed here.
+      {/* Engagement header — full width above the workspace. */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <Link
+            href="/"
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            ← all engagements
+          </Link>
+          <h1 className="mt-2 text-xl font-semibold tracking-tight">
+            {engagement.name}
+          </h1>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
+            {engagement.slug} · {engagement.status} · stream {streamState}
           </p>
-        </CardContent>
-      </Card>
-
-      {/* Engagement-wide context: scope + active session grants. */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <ScopeEditor slug={slug} canWrite={canWrite} />
-        <GrantsCard
-          engagementId={engagement.id}
-          refreshKey={grantsRefreshKey}
-          canRevoke={canWrite}
-        />
+        </div>
+        {canWrite && engagement.status === "active" && (
+          <Button variant="outline" size="sm" onClick={onArchive}>
+            Archive
+          </Button>
+        )}
       </div>
 
-      {/* Phase tabs. */}
-      <Tabs value={activeTab} onValueChange={setTab}>
-        <TabsList>
-          {PHASE_TABS.map(({ value, label, Icon }) => (
-            <TabsTrigger key={value} value={value}>
-              <span className="flex items-center gap-1.5">
-                <Icon className="h-3.5 w-3.5" />
-                {label}
-              </span>
-            </TabsTrigger>
-          ))}
-        </TabsList>
+      {error && <p className="text-sm text-critical">{error}</p>}
 
-        <TabsContent value="osint">
-          <PhasePanel
-            title="OSINT Recon"
-            blurb="Passive reconnaissance — domains, subdomains, emails, exposed assets, leaked creds."
-            roadmap="Phase 8 tags findings by phase; Phase 9 adds analyst-choice scanning (Tactical agent or manual) and import of theHarvester / amass / subfinder output."
-          />
-        </TabsContent>
+      {/* Left nav + content pane. */}
+      <div className="flex gap-8">
+        <EngagementNav active={view} onSelect={setView} />
 
-        <TabsContent value="vuln" className="space-y-6">
-          {/* Live workspace lands here for now — current findings are
-              scan-oriented. Phase 8 splits findings across tabs by phase. */}
-          {canWrite && engagement.status === "active" ? (
-            <RunPrompt slug={slug} />
-          ) : engagement.status !== "active" ? (
-            <p className="text-sm text-muted-foreground">
-              This engagement is {engagement.status}; runs are disabled.
-            </p>
-          ) : null}
-          <FindingsTable findings={findings} />
-          <EventLog events={events} />
-        </TabsContent>
+        <div className="min-w-0 flex-1">
+          {view === "findings" && (
+            <FindingsView findings={findings} onUpdated={upsertFinding} />
+          )}
 
-        <TabsContent value="exploit">
-          <PhasePanel
-            title="Exploit"
-            blurb="Exploited hosts, payloads, proof, and post-exploitation notes."
-            roadmap="Analyst-only by design — agents never exploit. Results are uploaded by the analyst, then pass the validation gate (Phase 9/10). Strategic can flag when a Kali attack-box is warranted."
-          />
-        </TabsContent>
+          {view === "entities" && (
+            <PlaceholderPanel
+              title="Entities"
+              roadmap="Entity correlation — emails, usernames, IPs, service accounts and more, extracted from findings, searchable + filterable. Coming in its own slice."
+            />
+          )}
 
-        <TabsContent value="phishing">
-          <PhasePanel
-            title="Phishing"
-            blurb="Campaigns, pretexts, and send / click / credential-capture stats."
-            roadmap="Phase 9/10 — manual record plus CSV import of campaign results."
-          />
-        </TabsContent>
+          {view === "report" && (
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0">
+                <CardTitle>Report</CardTitle>
+                <DownloadReport slug={slug} />
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-muted-foreground/70">
+                  <span className="text-critical">●</span> Generates a PDF from
+                  the engagement&apos;s <strong>validated</strong> findings
+                  across every phase.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
-        <TabsContent value="results" className="space-y-6">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <CardTitle>Report</CardTitle>
-              <DownloadReport slug={slug} />
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground/70">
-                <span className="text-critical">●</span> Phase 8 aggregates
-                validated findings across all phases here; Phase 11 polishes the
-                PDF to cover every phase plus the cost summary.
-              </p>
-            </CardContent>
-          </Card>
-        </TabsContent>
+          {view === "costs" && (
+            <PlaceholderPanel
+              title="Costs"
+              roadmap="Phase 11 — internal effort tracking: LLM spend + analyst labor (manual time logging) + infra, with a per-engagement rollup."
+            />
+          )}
 
-        <TabsContent value="costs">
-          <PhasePanel
-            title="Costs"
-            blurb="Internal effort tracking — LLM spend, analyst labor (manual time logging), and infra."
-            roadmap="Phase 11 — per-task estimate vs. actual, variance, and an engagement rollup feeding this tab and the report."
-          />
-        </TabsContent>
-      </Tabs>
+          {view === "scope" && (
+            <div className="space-y-6">
+              <ScopeEditor slug={slug} canWrite={canWrite} />
+              {engagement.status === "active" ? (
+                <RunPrompt slug={slug} />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  This engagement is {engagement.status}; runs are disabled.
+                </p>
+              )}
+              <GrantsCard
+                engagementId={engagement.id}
+                refreshKey={grantsRefreshKey}
+                canRevoke={canWrite}
+              />
+              <EventLog events={events} />
+            </div>
+          )}
+        </div>
+      </div>
 
       {canWrite && (
         <ApprovalsModal

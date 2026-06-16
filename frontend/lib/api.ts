@@ -13,6 +13,8 @@ import type {
   Engagement,
   EngagementStatus,
   Finding,
+  FindingPhase,
+  FindingValidationStatus,
   RunModel,
   RunStartResponse,
   ScopeKind,
@@ -112,8 +114,26 @@ export function deleteScopeItem(slug: string, scopeId: string): Promise<void> {
 // Findings
 // ---------------------------------------------------------------------------
 
-export function listFindings(slug: string): Promise<Finding[]> {
-  return request<Finding[]>(`/engagements/${slug}/findings`);
+export function listFindings(
+  slug: string,
+  filters?: { phase?: FindingPhase; status?: FindingValidationStatus },
+): Promise<Finding[]> {
+  const q = new URLSearchParams();
+  if (filters?.phase) q.set("phase", filters.phase);
+  if (filters?.status) q.set("status", filters.status);
+  const suffix = q.toString() ? `?${q.toString()}` : "";
+  return request<Finding[]>(`/engagements/${slug}/findings${suffix}`);
+}
+
+export function validateFinding(
+  findingId: string,
+  decision: FindingValidationStatus,
+  reason?: string,
+): Promise<Finding> {
+  return request<Finding>(`/findings/${findingId}/validate`, {
+    method: "POST",
+    body: JSON.stringify({ decision, reason }),
+  });
 }
 
 // ---------------------------------------------------------------------------
