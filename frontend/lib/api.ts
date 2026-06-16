@@ -1,14 +1,12 @@
-// Read-only fetch wrappers over the FastAPI surface.
+// Fetch wrappers over the FastAPI surface.
 //
-// Phase 6: viewer is presentation-only. Every call takes an explicit Source
-// (URL + API key) — there is no shared base URL, no implicit user. Mutation
-// surfaces (engagement create/archive/flush, scope add/delete, run start,
-// approval decide, grant revoke) all live in the CLI now and are gone from
-// the viewer entirely.
+// Phase 7: one backend (API_BASE_URL), identified analyst. Auth is resolved
+// per request — an Entra Bearer token when SSO is configured, else a dev
+// X-User-Id header for local work. No more per-call Source argument.
 
-import type { Source } from "@/lib/sources";
+import { API_BASE_URL, DEV_USER, ENTRA_ENABLED } from "@/lib/config";
+import { getAccessToken } from "@/lib/msal";
 import type {
-  APIKeyInfo,
   Approval,
   ApprovalStatus,
   Authorization,
@@ -20,22 +18,23 @@ import type {
   ScopeKind,
 } from "@/lib/types";
 
-function headers(source: Source, extra?: HeadersInit): HeadersInit {
-  return {
-    "Content-Type": "application/json",
-    "X-API-Key": source.apiKey,
-    ...extra,
-  };
+// Auth-only headers (no Content-Type — request() adds that for JSON bodies).
+export async function authHeaders(): Promise<Record<string, string>> {
+  if (ENTRA_ENABLED) {
+    const token = await getAccessToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+  return { "X-User-Id": DEV_USER };
 }
 
-async function request<T>(
-  source: Source,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const response = await fetch(`${source.url}${path}`, {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
-    headers: { ...headers(source), ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(await authHeaders()),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -46,68 +45,49 @@ async function request<T>(
 }
 
 // ---------------------------------------------------------------------------
-// API key self-introspection
-// ---------------------------------------------------------------------------
-
-export function getMyApiKey(source: Source): Promise<APIKeyInfo> {
-  return request<APIKeyInfo>(source, "/api-keys/me");
-}
-
-// ---------------------------------------------------------------------------
 // Engagements
 // ---------------------------------------------------------------------------
 
 export function listEngagements(
-  source: Source,
   status?: EngagementStatus,
 ): Promise<Engagement[]> {
   const q = status ? `?status=${status}` : "";
-  return request<Engagement[]>(source, `/engagements${q}`);
+  return request<Engagement[]>(`/engagements${q}`);
 }
 
-export function getEngagement(
-  source: Source,
-  slug: string,
-): Promise<Engagement> {
-  return request<Engagement>(source, `/engagements/${slug}`);
+export function getEngagement(slug: string): Promise<Engagement> {
+  return request<Engagement>(`/engagements/${slug}`);
 }
 
-export function createEngagement(
-  source: Source,
-  body: { name: string; slug?: string },
-): Promise<Engagement> {
-  return request<Engagement>(source, "/engagements", {
+export function createEngagement(body: {
+  name: string;
+  slug?: string;
+}): Promise<Engagement> {
+  return request<Engagement>("/engagements", {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
-export function archiveEngagement(
-  source: Source,
-  slug: string,
-): Promise<Engagement> {
-  return request<Engagement>(source, `/engagements/${slug}`, {
-    method: "DELETE",
-  });
+export function archiveEngagement(slug: string): Promise<Engagement> {
+  return request<Engagement>(`/engagements/${slug}`, { method: "DELETE" });
 }
 
-export function flushEngagement(source: Source, slug: string): Promise<void> {
-  return request<void>(source, `/engagements/${slug}/flush`, { method: "POST" });
+export function flushEngagement(slug: string): Promise<void> {
+  return request<void>(`/engagements/${slug}/flush`, { method: "POST" });
 }
 
 // ---------------------------------------------------------------------------
 // Scope
 // ---------------------------------------------------------------------------
 
-export function listScope(source: Source, slug: string) {
+export function listScope(slug: string) {
   return request<import("@/lib/types").ScopeItem[]>(
-    source,
     `/engagements/${slug}/scope`,
   );
 }
 
 export function createScopeItem(
-  source: Source,
   slug: string,
   body: {
     kind: ScopeKind;
@@ -117,18 +97,13 @@ export function createScopeItem(
   },
 ) {
   return request<import("@/lib/types").ScopeItem>(
-    source,
     `/engagements/${slug}/scope`,
     { method: "POST", body: JSON.stringify(body) },
   );
 }
 
-export function deleteScopeItem(
-  source: Source,
-  slug: string,
-  scopeId: string,
-): Promise<void> {
-  return request<void>(source, `/engagements/${slug}/scope/${scopeId}`, {
+export function deleteScopeItem(slug: string, scopeId: string): Promise<void> {
+  return request<void>(`/engagements/${slug}/scope/${scopeId}`, {
     method: "DELETE",
   });
 }
@@ -137,8 +112,8 @@ export function deleteScopeItem(
 // Findings
 // ---------------------------------------------------------------------------
 
-export function listFindings(source: Source, slug: string): Promise<Finding[]> {
-  return request<Finding[]>(source, `/engagements/${slug}/findings`);
+export function listFindings(slug: string): Promise<Finding[]> {
+  return request<Finding[]>(`/engagements/${slug}/findings`);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,11 +121,10 @@ export function listFindings(source: Source, slug: string): Promise<Finding[]> {
 // ---------------------------------------------------------------------------
 
 export function startRun(
-  source: Source,
   slug: string,
   body: { prompt: string; model?: RunModel },
 ): Promise<RunStartResponse> {
-  return request<RunStartResponse>(source, `/engagements/${slug}/runs`, {
+  return request<RunStartResponse>(`/engagements/${slug}/runs`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -161,16 +135,14 @@ export function startRun(
 // ---------------------------------------------------------------------------
 
 export function listApprovals(
-  source: Source,
   slug: string,
   status?: ApprovalStatus,
 ): Promise<Approval[]> {
   const q = status ? `?status=${status}` : "";
-  return request<Approval[]>(source, `/engagements/${slug}/approvals${q}`);
+  return request<Approval[]>(`/engagements/${slug}/approvals${q}`);
 }
 
 export function decideApproval(
-  source: Source,
   approvalId: string,
   body: {
     approved: boolean;
@@ -179,7 +151,7 @@ export function decideApproval(
     remember_for_session?: boolean;
   },
 ): Promise<Approval> {
-  return request<Approval>(source, `/approvals/${approvalId}/decision`, {
+  return request<Approval>(`/approvals/${approvalId}/decision`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -190,38 +162,30 @@ export function decideApproval(
 // ---------------------------------------------------------------------------
 
 export function listAuthorizations(
-  source: Source,
   engagementId: string,
   active?: boolean,
 ): Promise<Authorization[]> {
   const q = active === undefined ? "" : `?active=${active}`;
   return request<Authorization[]>(
-    source,
     `/engagements/${engagementId}/authorizations${q}`,
   );
 }
 
 export function revokeAuthorization(
-  source: Source,
   authorizationId: string,
 ): Promise<Authorization> {
-  return request<Authorization>(
-    source,
-    `/authorizations/${authorizationId}/revoke`,
-    { method: "POST" },
-  );
+  return request<Authorization>(`/authorizations/${authorizationId}/revoke`, {
+    method: "POST",
+  });
 }
 
 // ---------------------------------------------------------------------------
-// Reports (read-only export — produces a PDF, no state mutation)
+// Reports (PDF export)
 // ---------------------------------------------------------------------------
 
-export async function downloadEngagementReport(
-  source: Source,
-  slug: string,
-): Promise<void> {
-  const response = await fetch(`${source.url}/engagements/${slug}/report`, {
-    headers: { "X-API-Key": source.apiKey },
+export async function downloadEngagementReport(slug: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/engagements/${slug}/report`, {
+    headers: await authHeaders(),
   });
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);

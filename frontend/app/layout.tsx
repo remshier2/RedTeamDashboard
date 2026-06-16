@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SourceGate } from "@/components/source-gate";
-import { SourceSwitcher } from "@/components/source-switcher";
-import { SourceProvider } from "@/lib/source-context";
+import { AuthGate } from "@/components/auth-gate";
+import { IdentityMenu } from "@/components/identity-menu";
+import { AuthProvider } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Red Team Dashboard",
-  description: "Read-only viewer for self-hosted RTD deployments",
+  description: "Red team operations — engagements, agents, findings, reporting",
 };
 
 export default function RootLayout({
@@ -15,22 +15,27 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // `dark` is pinned on <html>: the app is always the monochrome dark theme.
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-background font-sans antialiased">
-        <SourceProvider>
-          <header className="border-b">
+    <html lang="en" className="dark">
+      <body className="min-h-screen bg-background font-sans text-foreground antialiased">
+        <AuthProvider>
+          <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
             <div className="container flex h-14 items-center justify-between">
-              <Link href="/" className="text-sm font-semibold">
-                Red Team Dashboard
+              <Link href="/" className="group flex items-center gap-2.5">
+                {/* The lone accent in the chrome — a single ember mark. */}
+                <span className="h-3.5 w-1 rounded-full bg-critical" />
+                <span className="text-sm font-semibold tracking-tight">
+                  Red Team Dashboard
+                </span>
               </Link>
-              <SourceSwitcher />
+              <IdentityMenu />
             </div>
           </header>
-          <SourceGate>
-            <main className="container py-6">{children}</main>
-          </SourceGate>
-        </SourceProvider>
+          <AuthGate>
+            <main className="container py-8">{children}</main>
+          </AuthGate>
+        </AuthProvider>
       </body>
     </html>
   );

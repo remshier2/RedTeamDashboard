@@ -1,15 +1,15 @@
 // SSE wrapper around the backend's /engagements/{slug}/events feed.
 //
 // Uses @microsoft/fetch-event-source because the standard EventSource API
-// can't send custom headers (we need X-API-Key). fetch-event-source also
-// handles reconnect + Last-Event-ID for us.
+// can't send custom headers (we need the auth header). fetch-event-source
+// also handles reconnect + Last-Event-ID for us.
 
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import type { Source } from "@/lib/sources";
+import { authHeaders } from "@/lib/api";
+import { API_BASE_URL } from "@/lib/config";
 import type { RunEvent } from "@/lib/types";
 
 export interface SubscribeOptions {
-  source: Source;
   slug: string;
   thread?: string;
   onEvent: (event: RunEvent, sseId: string | undefined) => void;
@@ -19,16 +19,20 @@ export interface SubscribeOptions {
   lastEventId?: string;
 }
 
-export function subscribeToEvents(opts: SubscribeOptions): Promise<void> {
-  const url = new URL(`${opts.source.url}/engagements/${opts.slug}/events`);
+export async function subscribeToEvents(opts: SubscribeOptions): Promise<void> {
+  const url = new URL(`${API_BASE_URL}/engagements/${opts.slug}/events`);
   if (opts.thread) url.searchParams.set("thread", opts.thread);
+
+  // Resolve auth once at subscribe time; the stream stays authorized for its
+  // lifetime (a fresh token is acquired on reconnect).
+  const headers = {
+    ...(await authHeaders()),
+    ...(opts.lastEventId ? { "Last-Event-ID": opts.lastEventId } : {}),
+  };
 
   return fetchEventSource(url.toString(), {
     method: "GET",
-    headers: {
-      "X-API-Key": opts.source.apiKey,
-      ...(opts.lastEventId ? { "Last-Event-ID": opts.lastEventId } : {}),
-    },
+    headers,
     signal: opts.signal,
     openWhenHidden: true,
     onopen: async (response) => {

@@ -10,7 +10,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { listAuthorizations, revokeAuthorization } from "@/lib/api";
-import { useSources } from "@/lib/source-context";
 import type { Authorization } from "@/lib/types";
 
 interface GrantsCardProps {
@@ -26,17 +25,15 @@ export function GrantsCard({
   refreshKey,
   canRevoke,
 }: GrantsCardProps) {
-  const { current } = useSources();
   const [grants, setGrants] = useState<Authorization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    if (!current) return;
     setLoading(true);
     try {
-      const rows = await listAuthorizations(current, engagementId, true);
+      const rows = await listAuthorizations(engagementId, true);
       setGrants(rows);
       setError(null);
     } catch (err) {
@@ -44,14 +41,13 @@ export function GrantsCard({
     } finally {
       setLoading(false);
     }
-  }, [current, engagementId]);
+  }, [engagementId]);
 
   useEffect(() => {
     reload();
   }, [reload, refreshKey]);
 
   const onRevoke = async (grant: Authorization) => {
-    if (!current) return;
     if (
       !window.confirm(
         `Revoke session grant for ${grant.tool_name}? Future calls will prompt for approval again.`,
@@ -61,7 +57,7 @@ export function GrantsCard({
     }
     setBusyId(grant.id);
     try {
-      await revokeAuthorization(current, grant.id);
+      await revokeAuthorization(grant.id);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

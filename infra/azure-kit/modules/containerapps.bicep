@@ -37,6 +37,10 @@ param llmProvider string = 'anthropic'
 @description('Comma-separated CORS allow-origins. Add the central viewer\'s URL so the browser can call this tenant\'s backend (Phase 6).')
 param corsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 
+@description('Entra tenant + app (client) id for analyst SSO. Blank → Entra auth stays off and the backend falls back to X-API-Key / X-User-Id. Not secret (these are public identifiers), so passed as plain env vars.')
+param entraTenantId string = ''
+param entraClientId string = ''
+
 // ---------------------------------------------------------------------------
 // Role assignment IDs
 // ---------------------------------------------------------------------------
@@ -96,6 +100,8 @@ var appEnv = [
   { name: 'AZURE_OPENAI_DEPLOYMENT', secretRef: 'azure-openai-deployment' }
   { name: 'AZURE_OPENAI_API_VERSION', value: '2024-08-01-preview' }
   { name: 'CORS_ALLOW_ORIGINS', value: corsAllowOrigins }
+  { name: 'ENTRA_TENANT_ID', value: entraTenantId }
+  { name: 'ENTRA_CLIENT_ID', value: entraClientId }
 ]
 
 // ---------------------------------------------------------------------------

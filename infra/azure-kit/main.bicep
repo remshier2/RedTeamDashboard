@@ -59,6 +59,10 @@ param anthropicModel string = 'claude-opus-4-7'
 @description('Extra CORS allow-origins for the browser viewer. The kit auto-appends the in-tenant Static Web App URL; use this only to add other origins (e.g. a self-hosted viewer at a custom domain). Comma-separated.')
 param extraCorsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 
+@description('Entra tenant + app (client) id for analyst SSO (from setup-entra.sh). Blank → Entra auth stays off; backend uses API keys. See docs/ENTRA_SETUP.md.')
+param entraTenantId string = ''
+param entraClientId string = ''
+
 var namePrefix = 'rtd-${env}'
 var tags = {
   app: 'red-team-dashboard'
@@ -149,6 +153,8 @@ module apps 'modules/containerapps.bicep' = {
     // Auto-append the in-tenant viewer's URL so the browser at that origin
     // can call the backend without any manual CORS plumbing.
     corsAllowOrigins: '${extraCorsAllowOrigins},${viewer.outputs.url}'
+    entraTenantId: entraTenantId
+    entraClientId: entraClientId
   }
 }
 

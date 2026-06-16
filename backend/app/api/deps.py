@@ -168,19 +168,80 @@ def upsert_user(session: Session, header_value: str) -> User:
     return user
 
 
+def upsert_entra_user(session: Session, claims: dict) -> User:
+    """Resolve (and lazily create) the ``User`` for a validated Entra token.
+
+    Matches on the token's ``oid`` first, then email; backfills ``entra_oid`` /
+    ``display_name`` on an existing email-matched row so an analyst who used
+    ``X-User-Id`` in dev links up to their Entra identity on first SSO.
+    """
+    oid = claims.get("oid") or claims.get("sub")
+    email = (
+        claims.get("preferred_username")
+        or claims.get("email")
+        or claims.get("upn")
+    )
+    name = claims.get("name")
+
+    user: User | None = None
+    if oid:
+        user = session.execute(
+            select(User).where(User.entra_oid == oid)
+        ).scalar_one_or_none()
+    if user is None and email:
+        user = session.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+
+    if user is None:
+        user = User(
+            email=email or f"{oid}@entra.local",
+            display_name=name or (email.split("@", 1)[0] if email else None),
+            entra_oid=oid,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
+
+    changed = False
+    if oid and not user.entra_oid:
+        user.entra_oid = oid
+        changed = True
+    if name and not user.display_name:
+        user.display_name = name
+        changed = True
+    if changed:
+        session.commit()
+        session.refresh(user)
+    return user
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    parts = authorization.split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
 def current_user(
     session: Annotated[Session, Depends(db_session)],
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
 ) -> User:
     """Resolve the request's acting user.
 
     Preference order:
-    1. ``X-API-Key`` (production path) — return the user who minted the key.
+    1. ``X-API-Key`` (CLI / automation) — return the user who minted the key.
        If the key has no ``created_by`` (the bootstrap admin key), synthesize a
        deterministic ``system@deployment.local`` user so audit rows have an id.
-    2. ``X-User-Id`` (dev/test path) — upsert the named user. Will be removed
-       once Entra integration lands.
+    2. ``Authorization: Bearer`` Entra access token (browser SSO) — validated
+       against the tenant JWKS, mapped to a ``User`` by ``oid``. Only consulted
+       when Entra is configured; an invalid token is a hard 401.
+    3. ``X-User-Id`` (dev/test) — upsert the named user.
     """
     if x_api_key:
         key = _lookup_api_key(session, x_api_key)
@@ -200,9 +261,20 @@ def current_user(
             session.refresh(user)
         return user
 
+    token = _bearer_token(authorization)
+    if token and settings.entra_enabled:
+        from app.core.entra import EntraError, validate_token
+
+        try:
+            claims = validate_token(token)
+        except EntraError as exc:
+            raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
+        return upsert_entra_user(session, claims)
+
     if not x_user_id:
         raise HTTPException(
-            status_code=401, detail="X-API-Key or X-User-Id header required"
+            status_code=401,
+            detail="X-API-Key, Authorization: Bearer, or X-User-Id header required",
         )
     return upsert_user(session, x_user_id)
 

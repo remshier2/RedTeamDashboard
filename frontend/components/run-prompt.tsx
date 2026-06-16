@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { startRun } from "@/lib/api";
-import { useSources } from "@/lib/source-context";
 import type { LLMProvider } from "@/lib/types";
 
 // Default model names by provider. Pre-filled when the user picks a
@@ -40,7 +39,6 @@ export function RunPrompt({
   slug: string;
   onStarted?: (threadId: string) => void;
 }) {
-  const { current } = useSources();
   const [prompt, setPrompt] = useState(
     "enumerate acme.com subdomains and probe what's live",
   );
@@ -56,7 +54,6 @@ export function RunPrompt({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!current) return;
     if (!prompt.trim()) return;
     if (!modelName.trim()) {
       setError("model name is required");
@@ -65,7 +62,7 @@ export function RunPrompt({
     setBusy(true);
     setError(null);
     try {
-      const result = await startRun(current, slug, {
+      const result = await startRun(slug, {
         prompt: prompt.trim(),
         model: { provider, name: modelName.trim() },
       });
@@ -126,7 +123,7 @@ export function RunPrompt({
             </div>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" disabled={busy || !current}>
+          <Button type="submit" disabled={busy}>
             {busy ? "Sending…" : "Run"}
           </Button>
         </form>

@@ -13,7 +13,6 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { decideApproval } from "@/lib/api";
-import { useSources } from "@/lib/source-context";
 
 export interface PendingApproval {
   approval_id: string;
@@ -32,7 +31,6 @@ export function ApprovalsModal({
   pending: PendingApproval | null;
   onResolved: (approvalId: string) => void;
 }) {
-  const { current } = useSources();
   const [argsJson, setArgsJson] = useState("");
   const [reason, setReason] = useState("");
   const [remember, setRemember] = useState(false);
@@ -51,12 +49,11 @@ export function ApprovalsModal({
   if (!pending) return null;
 
   const decide = async (kind: "approve" | "edit" | "deny") => {
-    if (!current) return;
     setBusy(true);
     setError(null);
     try {
       if (kind === "approve") {
-        await decideApproval(current, pending.approval_id, {
+        await decideApproval(pending.approval_id, {
           approved: true,
           remember_for_session: remember,
         });
@@ -69,13 +66,13 @@ export function ApprovalsModal({
           setBusy(false);
           return;
         }
-        await decideApproval(current, pending.approval_id, {
+        await decideApproval(pending.approval_id, {
           approved: true,
           edited_args: edited,
           remember_for_session: remember,
         });
       } else {
-        await decideApproval(current, pending.approval_id, {
+        await decideApproval(pending.approval_id, {
           approved: false,
           reason: reason.trim() || "denied by operator",
         });

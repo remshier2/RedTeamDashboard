@@ -35,6 +35,39 @@ class Settings(BaseSettings):
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return v
 
+    # ── Microsoft Entra ID (per-analyst SSO) ─────────────────────────────
+    # When tenant + client id are set, the API additionally accepts
+    # `Authorization: Bearer <jwt>` access tokens issued by this Entra app
+    # (validated against the tenant JWKS), resolving the caller to a User by
+    # the token's `oid`. Left blank → Entra auth is disabled and local dev
+    # relies on X-API-Key / X-User-Id. The API-key path always remains for
+    # the CLI regardless.
+    entra_tenant_id: str = ""
+    entra_client_id: str = ""
+    # Expected access-token audience. Blank → defaults to api://<client_id>.
+    entra_audience: str = ""
+
+    @property
+    def entra_enabled(self) -> bool:
+        return bool(self.entra_tenant_id and self.entra_client_id)
+
+    @property
+    def entra_expected_audience(self) -> str:
+        if self.entra_audience:
+            return self.entra_audience
+        return f"api://{self.entra_client_id}" if self.entra_client_id else ""
+
+    @property
+    def entra_issuer(self) -> str:
+        return f"https://login.microsoftonline.com/{self.entra_tenant_id}/v2.0"
+
+    @property
+    def entra_jwks_uri(self) -> str:
+        return (
+            f"https://login.microsoftonline.com/{self.entra_tenant_id}"
+            "/discovery/v2.0/keys"
+        )
+
     # Default LLM backend when a run doesn't specify one.
     # - "anthropic" → Claude API (paid, requires ANTHROPIC_API_KEY)
     # - "openai"    → OpenAI API (paid, requires OPENAI_API_KEY)

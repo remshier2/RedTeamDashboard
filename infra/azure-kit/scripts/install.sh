@@ -28,6 +28,8 @@ IMAGE_REPO_OWNER="donpercival0x45"
 IMAGE_TAG="latest"
 LLM_PROVIDER="anthropic"
 PG_PW=""
+ENTRA_TENANT_ID=""
+ENTRA_CLIENT_ID=""
 NON_INTERACTIVE=false
 
 usage() {
@@ -41,6 +43,10 @@ Options:
   --image-tag TAG         Image tag to deploy (default: latest)
   --llm-provider P        anthropic | openai | azure (default: anthropic)
   --postgres-password PW  Provide the postgres password; otherwise one is generated.
+  --entra-tenant-id ID    Entra tenant id for analyst SSO (from setup-entra.sh). Optional.
+  --entra-client-id ID    Entra app (client) id for analyst SSO. Optional.
+                          Both set → backend validates SSO tokens AND the viewer
+                          is built with sign-in enabled. Omit → API-key auth only.
   --yes                   Skip the confirmation prompt; useful in CI/automation.
   -h, --help              Show this help.
 EOF
@@ -55,6 +61,8 @@ while [[ $# -gt 0 ]]; do
         --image-tag) IMAGE_TAG="$2"; shift 2 ;;
         --llm-provider) LLM_PROVIDER="$2"; shift 2 ;;
         --postgres-password) PG_PW="$2"; shift 2 ;;
+        --entra-tenant-id) ENTRA_TENANT_ID="$2"; shift 2 ;;
+        --entra-client-id) ENTRA_CLIENT_ID="$2"; shift 2 ;;
         --yes) NON_INTERACTIVE=true; shift ;;
         -h|--help) usage ;;
         *) echo "unknown arg: $1" >&2; usage ;;
@@ -140,6 +148,8 @@ az deployment sub create \
     --parameters imageRepoOwner="$IMAGE_REPO_OWNER" \
     --parameters imageTag="$GHCR_IMAGE_TAG" \
     --parameters llmProvider="$LLM_PROVIDER" \
+    --parameters entraTenantId="$ENTRA_TENANT_ID" \
+    --parameters entraClientId="$ENTRA_CLIENT_ID" \
     --only-show-errors \
     -o none
 
@@ -197,47 +207,55 @@ done
 # Deploy the viewer static bundle to the Static Web App
 # ---------------------------------------------------------------------------
 #
-# Download the prebuilt viewer bundle from this release's GitHub assets and
-# upload it via the SWA deployment token. The SWA CLI ships only via npm,
-# so we run it from a Docker node:lts container — keeps the operator's
-# prereqs to `docker + az + python3 + openssl` instead of also Node.js.
-# Alpine doesn't work (the StaticSitesClient binary needs glibc).
-#
-# Skipped when --image-tag is `latest` because we don't know which release
-# to fetch; operator should re-run pinned to a version.
-bold "[5.5/6] Deploying viewer to Static Web App…"
+# The viewer's per-tenant config (this backend's URL + Entra IDs) is inlined
+# at BUILD time (Next.js NEXT_PUBLIC_*), so a generic prebuilt bundle can't
+# carry it — we build the viewer here from the operator's checkout with the
+# right values, then upload via the SWA deployment token. Everything runs in
+# a Docker node:lts container, so the operator's prereqs stay `docker + az +
+# python3 + openssl` (no host Node.js). Alpine doesn't work (the
+# StaticSitesClient binary needs glibc).
+bold "[5.5/6] Building + deploying viewer to Static Web App…"
 SWA_SKIPPED=false
+FRONTEND_DIR="$(cd "$KIT_ROOT/../.." && pwd)/frontend"
 if ! command -v docker >/dev/null 2>&1; then
     red "    skipped — docker not on PATH; install Docker then re-run"
     red "    or deploy manually: SWA name=$VIEWER_NAME, see docs/DEPLOY.md"
     SWA_SKIPPED=true
-elif [[ "$IMAGE_TAG" == "latest" ]]; then
-    red "    skipped — running with --image-tag latest. Re-run with a pinned"
-    red "    version (e.g. --image-tag v0.2.0) to fetch the matching viewer bundle."
+elif [[ ! -d "$FRONTEND_DIR" ]]; then
+    red "    skipped — viewer source not found at $FRONTEND_DIR"
+    red "    (run install.sh from inside a repo checkout). See docs/DEPLOY.md"
     SWA_SKIPPED=true
 else
-    BUNDLE_TAG="$IMAGE_TAG"
-    [[ "$BUNDLE_TAG" != v* ]] && BUNDLE_TAG="v$BUNDLE_TAG"
-    BUNDLE_URL="https://github.com/DonPercival0x45/RedTeamDashboard/releases/download/$BUNDLE_TAG/rtd-viewer-static-$BUNDLE_TAG.zip"
+    ENTRA_SCOPE=""
+    [[ -n "$ENTRA_CLIENT_ID" ]] && ENTRA_SCOPE="api://$ENTRA_CLIENT_ID/access_as_user"
+    [[ -n "$ENTRA_CLIENT_ID" ]] && SSO_STATE="on" || SSO_STATE="off (API-key / dev identity)"
     TMP_DIR="$(mktemp -d)"
-    echo "    downloading $BUNDLE_URL"
-    if ! curl -fsSL -o "$TMP_DIR/viewer.zip" "$BUNDLE_URL"; then
-        red "    download failed; the release may not have the static bundle yet"
-        red "    (only v0.2.0+ ships it). Re-run with a newer --image-tag or"
-        red "    deploy the bundle yourself — see docs/DEPLOY.md"
-        SWA_SKIPPED=true
-    else
-        unzip -q "$TMP_DIR/viewer.zip" -d "$TMP_DIR/viewer"
+    # Copy source minus heavy/build dirs so we don't touch the operator's tree.
+    tar -C "$FRONTEND_DIR" --exclude=node_modules --exclude=.next --exclude=out -cf - . \
+        | tar -C "$TMP_DIR" -xf -
+    echo "    building viewer (API=https://$APP_FQDN, SSO=$SSO_STATE)…"
+    if docker run --rm \
+        -e NEXT_OUTPUT=export \
+        -e NEXT_PUBLIC_API_BASE_URL="https://$APP_FQDN" \
+        -e NEXT_PUBLIC_ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
+        -e NEXT_PUBLIC_ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID" \
+        -e NEXT_PUBLIC_ENTRA_API_SCOPE="$ENTRA_SCOPE" \
+        -v "$TMP_DIR:/app" -w /app node:lts \
+        sh -c "npm ci --no-audit --no-fund && npm run build" ; then
         DEPLOY_TOKEN="$(az staticwebapp secrets list -n "$VIEWER_NAME" -g "$RG_OUT" --query 'properties.apiKey' -o tsv)"
-        # Run the SWA CLI from /tmp inside the container so its cwd isn't
-        # the artifact dir (the CLI refuses that). Mount the bundle under
-        # /work; pass /work as the deploy target.
-        docker run --rm -v "$TMP_DIR/viewer:/work" node:lts sh -c \
+        # SWA CLI refuses to deploy from inside the artifact dir → cd /tmp.
+        docker run --rm -v "$TMP_DIR/out:/work" node:lts sh -c \
             "cd /tmp && SWA_CLI_TELEMETRY_OPTOUT=1 npx -y @azure/static-web-apps-cli@latest \
                 deploy /work --deployment-token $DEPLOY_TOKEN \
                 --env production --no-use-keychain"
         green "    viewer deployed."
+    else
+        red "    viewer build failed — see output above. SWA left empty."
+        SWA_SKIPPED=true
     fi
+    # node_modules/out were written as root inside the container; chown back
+    # so the host rm can clean up.
+    docker run --rm -v "$TMP_DIR:/t" node:lts chown -R "$(id -u):$(id -g)" /t || true
     rm -rf "$TMP_DIR"
 fi
 

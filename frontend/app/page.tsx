@@ -14,12 +14,17 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createEngagement, listEngagements } from "@/lib/api";
-import { useSources } from "@/lib/source-context";
 import type { Engagement } from "@/lib/types";
 
+function statusVariant(status: Engagement["status"]) {
+  if (status === "active") return "default" as const;
+  if (status === "archived") return "secondary" as const;
+  return "outline" as const;
+}
+
 export default function EngagementListPage() {
-  const { current } = useSources();
-  const canWrite = current?.scope !== "viewer";
+  // Single-tenant: any signed-in analyst can create/manage engagements.
+  const canWrite = true;
   const [engagements, setEngagements] = useState<Engagement[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -27,27 +32,25 @@ export default function EngagementListPage() {
   const [creating, setCreating] = useState(false);
 
   const reload = useCallback(async () => {
-    if (!current) return;
     try {
       setError(null);
-      setEngagements(await listEngagements(current));
+      setEngagements(await listEngagements());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [current]);
+  }, []);
 
   useEffect(() => {
     setEngagements(null);
     reload();
-  }, [reload, current?.id]);
+  }, [reload]);
 
   const onCreate = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!current) return;
     if (!name.trim()) return;
     setCreating(true);
     try {
-      await createEngagement(current, {
+      await createEngagement({
         name: name.trim(),
         slug: slug.trim() || undefined,
       });
@@ -61,26 +64,34 @@ export default function EngagementListPage() {
     }
   };
 
-  if (!current) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Select a source to view engagements.
-      </p>
-    );
-  }
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      <div className="flex items-end justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Engagements</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {engagements === null
+              ? "Loading…"
+              : `${engagements.length} ${
+                  engagements.length === 1 ? "engagement" : "engagements"
+                }`}
+          </p>
+        </div>
+      </div>
+
       {canWrite && (
         <Card>
           <CardHeader>
-            <CardTitle>New engagement</CardTitle>
+            <CardTitle className="text-base">New engagement</CardTitle>
             <CardDescription>
               Slug auto-generates from the name if you leave it blank.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={onCreate} className="grid gap-4 sm:grid-cols-3 sm:items-end">
+            <form
+              onSubmit={onCreate}
+              className="grid gap-4 sm:grid-cols-3 sm:items-end"
+            >
               <div className="space-y-2 sm:col-span-2">
                 <Label htmlFor="name">Name</Label>
                 <Input
@@ -108,60 +119,35 @@ export default function EngagementListPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Engagements</CardTitle>
-          <CardDescription>
-            Source <code>{current.name}</code>
-            {current.scope ? ` · key scope: ${current.scope}` : ""}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {error && (
-            <p className="mb-3 text-sm text-destructive">{error}</p>
-          )}
-          {engagements === null && !error && (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          )}
-          {engagements && engagements.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No engagements yet
-              {canWrite ? " — create one above." : "."}
-            </p>
-          )}
-          {engagements && engagements.length > 0 && (
-            <ul className="divide-y">
-              {engagements.map((eng) => (
-                <li
-                  key={eng.id}
-                  className="flex items-center justify-between py-3"
-                >
-                  <div>
-                    <Link
-                      href={`/e?slug=${encodeURIComponent(eng.slug)}`}
-                      className="font-medium hover:underline"
-                    >
-                      {eng.name}
-                    </Link>
-                    <p className="text-xs text-muted-foreground">{eng.slug}</p>
-                  </div>
-                  <Badge
-                    variant={
-                      eng.status === "active"
-                        ? "default"
-                        : eng.status === "archived"
-                          ? "secondary"
-                          : "outline"
-                    }
-                  >
-                    {eng.status}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+      {error && <p className="text-sm text-critical">{error}</p>}
+
+      {engagements && engagements.length === 0 && !error && (
+        <p className="text-sm text-muted-foreground">
+          No engagements yet{canWrite ? " — create one above." : "."}
+        </p>
+      )}
+
+      {engagements && engagements.length > 0 && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {engagements.map((eng) => (
+            <Link
+              key={eng.id}
+              href={`/e?slug=${encodeURIComponent(eng.slug)}`}
+              className="group rounded-lg border border-border bg-card p-5 transition-colors hover:border-muted-foreground/40"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="font-medium leading-tight group-hover:text-foreground">
+                  {eng.name}
+                </h2>
+                <Badge variant={statusVariant(eng.status)}>{eng.status}</Badge>
+              </div>
+              <p className="mt-2 font-mono text-xs text-muted-foreground">
+                {eng.slug}
+              </p>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

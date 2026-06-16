@@ -83,6 +83,12 @@ That's the whole thing. Flags:
   `ghcr.io/donpercival0x45/rtd-{backend,worker}:latest`. Pin a version
   in production.
 - `--image-repo-owner <gh-user>` — override if you forked and republish.
+- `--entra-tenant-id <id>` / `--entra-client-id <id>` — enable per-analyst
+  Entra SSO (from `setup-entra.sh`; see `docs/ENTRA_SETUP.md`). Both set →
+  the backend validates SSO tokens and the viewer is built with sign-in on.
+  Omit → API-key auth only. The viewer is built from your checkout at install
+  time (in Docker) so this tenant's API URL + Entra IDs are baked into the
+  static bundle.
 - `--yes` skips the confirmation prompt.
 
 What it does (~8 min wall-clock):

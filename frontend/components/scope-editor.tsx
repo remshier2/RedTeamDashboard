@@ -14,7 +14,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createScopeItem, deleteScopeItem, listScope } from "@/lib/api";
-import { useSources } from "@/lib/source-context";
 import type { ScopeItem, ScopeKind } from "@/lib/types";
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
@@ -26,7 +25,6 @@ export function ScopeEditor({
   slug: string;
   canWrite: boolean;
 }) {
-  const { current } = useSources();
   const [items, setItems] = useState<ScopeItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,27 +35,25 @@ export function ScopeEditor({
   const [adding, setAdding] = useState(false);
 
   const reload = useCallback(async () => {
-    if (!current) return;
     try {
       setError(null);
-      setItems(await listScope(current, slug));
+      setItems(await listScope(slug));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [current, slug]);
+  }, [slug]);
 
   useEffect(() => {
     setItems(null);
     reload();
-  }, [reload, current?.id]);
+  }, [reload]);
 
   const onAdd = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!current) return;
     if (!value.trim()) return;
     setAdding(true);
     try {
-      await createScopeItem(current, slug, {
+      await createScopeItem(slug, {
         kind,
         value: value.trim(),
         is_exclusion: isExclusion,
@@ -75,9 +71,8 @@ export function ScopeEditor({
   };
 
   const onDelete = async (id: string) => {
-    if (!current) return;
     try {
-      await deleteScopeItem(current, slug, id);
+      await deleteScopeItem(slug, id);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -132,7 +127,7 @@ export function ScopeEditor({
               required
             />
           </div>
-          <Button type="submit" disabled={adding || !current}>
+          <Button type="submit" disabled={adding}>
             {adding ? "Adding…" : "Add"}
           </Button>
           <label className="flex items-center gap-2 text-sm sm:col-span-2">
