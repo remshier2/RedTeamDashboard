@@ -11,6 +11,7 @@ from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
 from app.models.observation import Observation
 from app.models.scope_item import ScopeItem, ScopeKind
 from app.models.user import User
+from app.models.user_provider_key import ProviderKeyKind, UserProviderKey
 
 __all__ = [
     "APIKey",
@@ -26,10 +27,12 @@ __all__ = [
     "FindingPhase",
     "FindingStatus",
     "Observation",
+    "ProviderKeyKind",
     "RiskLevel",
     "ScopeItem",
     "ScopeKind",
     "Severity",
     "User",
+    "UserProviderKey",
     "scope_satisfies",
 ]
