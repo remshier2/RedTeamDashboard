@@ -25,10 +25,26 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    Observation,
     RiskLevel,
     ScopeItem,
     ScopeKind,
     Severity,
+)
+
+# WeasyPrint needs GTK shared libraries (libgobject-2.0, pango, etc.) which
+# aren't available on Windows dev machines. Skip PDF-rendering tests there;
+# they run cleanly in CI on the Ubuntu runner where GTK is installed.
+_weasyprint_ok: bool
+try:
+    import weasyprint  # noqa: F401
+
+    _weasyprint_ok = True
+except OSError:
+    _weasyprint_ok = False
+
+_needs_gtk = pytest.mark.skipif(
+    not _weasyprint_ok, reason="WeasyPrint GTK libraries not available on this host"
 )
 
 
@@ -105,6 +121,7 @@ def _seed_data(db: Session, engagement_id: uuid.UUID) -> None:
     db.commit()
 
 
+@_needs_gtk
 def test_report_renders_pdf(
     client: TestClient, db: Session, engagement: Engagement
 ) -> None:
@@ -121,6 +138,27 @@ def test_report_renders_pdf(
     assert response.content.startswith(b"%PDF-")
     # And it's at least a few KB — real content, not a stub.
     assert len(response.content) > 2_000
+
+
+@_needs_gtk
+def test_report_includes_observations(
+    client: TestClient, db: Session, engagement: Engagement
+) -> None:
+    db.add(
+        Observation(
+            engagement_id=engagement.id,
+            content="Certificate expires in 14 days",
+            phase=FindingPhase.osint,
+        )
+    )
+    db.commit()
+
+    resp = client.get(
+        f"/engagements/{engagement.slug}/report",
+        headers={"X-User-Id": "report-test@example.com"},
+    )
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
 
 
 def test_report_404_for_unknown_engagement(client: TestClient) -> None:

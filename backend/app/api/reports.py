@@ -16,7 +16,6 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import select
-from weasyprint import HTML
 
 from app.api.deps import CurrentUser, DbSession
 from app.models import (
@@ -103,6 +102,8 @@ def engagement_report(
         audit=audit,
         generated_at=datetime.now(tz=UTC),
     )
+
+    from weasyprint import HTML  # deferred: needs GTK, not available on all hosts
 
     pdf_bytes = HTML(string=html).write_pdf()
     filename = f"{eng.slug}-report-{datetime.now(tz=UTC).strftime('%Y%m%d')}.pdf"
