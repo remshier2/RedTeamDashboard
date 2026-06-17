@@ -132,7 +132,40 @@ rtd approve <approval-id> --deny --reason "out of scope"
 
 rtd findings list acme-q3-pentest --severity high
 rtd tail acme-q3-pentest
+
+# Add a freeform observation (doesn't need validation)
+rtd engagement observations add acme-q3-pentest "Login portal exposes version string in Server header" --phase osint
+rtd engagement observations list acme-q3-pentest
+
+# Bulk import findings from a prior report or scanner output
+# FILE is a JSON array — each object needs at minimum: title
+# Optional: severity, phase, summary, target, source_tool, details
+rtd engagement import-findings acme-q3-pentest findings.json
 ```
+
+**findings.json shape for import:**
+
+```json
+[
+  {
+    "title": "TLS certificate expires in 14 days",
+    "severity": "medium",
+    "phase": "osint",
+    "target": "acme.com",
+    "summary": "Certificate issued by Let's Encrypt, expires 2026-07-01.",
+    "source_tool": "manual"
+  },
+  {
+    "title": "Subdomain takeover candidate",
+    "severity": "high",
+    "phase": "osint",
+    "target": "staging.acme.com",
+    "source_tool": "subfinder"
+  }
+]
+```
+
+All imported findings land as `pending_validation` and appear in the viewer for analyst review before they become report-eligible.
 
 ### Browser viewer
 

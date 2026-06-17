@@ -8,6 +8,7 @@ from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
 from app.models.engagement import Engagement, EngagementStatus
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
+from app.models.observation import Observation
 from app.models.scope_item import ScopeItem, ScopeKind
 from app.models.user import User
 
@@ -24,6 +25,7 @@ __all__ = [
     "Finding",
     "FindingPhase",
     "FindingStatus",
+    "Observation",
     "RiskLevel",
     "ScopeItem",
     "ScopeKind",

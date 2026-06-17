@@ -5,6 +5,9 @@ per concept: engagements themselves + nested scope items.
 """
 from __future__ import annotations
 
+import json
+import sys
+
 import click
 from rich.table import Table
 
@@ -189,7 +192,7 @@ def archive_cmd(ctx: click.Context, slug: str) -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def flush_cmd(ctx: click.Context, slug: str, yes: bool) -> None:
-    """Permanently delete ALL data for engagement SLUG. Requires admin key.
+    """Permanently delete ALL data for engagement SLUG.
 
     An export is created in blob storage first (if configured).
     This cannot be undone.
@@ -200,10 +203,125 @@ def flush_cmd(ctx: click.Context, slug: str, yes: bool) -> None:
             abort=True,
         )
     with ctx.obj.client() as c:
-        result = c.post(f"/engagements/{slug}/flush")
+        c.post(f"/engagements/{slug}/flush")
     from rtd.output import console
     console.print(f"[bold red]flushed[/bold red] {slug!r}")
-    if result.get("blob_url"):
-        console.print(f"  export: {result['blob_url']}")
-    else:
-        console.print(f"  [yellow]{result.get('note', 'no blob configured')}[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# Observations
+# ---------------------------------------------------------------------------
+
+
+@engagement_group.group("observations")
+def observations_group() -> None:
+    """Manage freeform observations for an engagement."""
+
+
+@observations_group.command("list")
+@click.argument("slug")
+@click.pass_context
+def observations_list(ctx: click.Context, slug: str) -> None:
+    """List observations for engagement SLUG."""
+    with ctx.obj.client() as c:
+        rows = c.get(f"/engagements/{slug}/observations")
+    t = Table(title=f"Observations ({slug})")
+    t.add_column("id", style="dim")
+    t.add_column("phase")
+    t.add_column("content")
+    t.add_column("created")
+    for r in rows:
+        t.add_row(
+            r["id"][:8],
+            r.get("phase") or "",
+            r["content"][:80] + ("…" if len(r["content"]) > 80 else ""),
+            r["created_at"][:19],
+        )
+    emit(rows, json_mode=ctx.obj.json_mode, table=t)
+
+
+@observations_group.command("add")
+@click.argument("slug")
+@click.argument("content")
+@click.option(
+    "--phase",
+    type=click.Choice(["osint", "vuln_scan", "exploit", "phishing", "general"]),
+    help="Optional phase tag.",
+)
+@click.pass_context
+def observations_add(ctx: click.Context, slug: str, content: str, phase: str | None) -> None:
+    """Add an observation to engagement SLUG."""
+    body: dict[str, object] = {"content": content}
+    if phase:
+        body["phase"] = phase
+    with ctx.obj.client() as c:
+        obs = c.post(f"/engagements/{slug}/observations", json=body)
+    emit(
+        obs,
+        json_mode=ctx.obj.json_mode,
+        table=kv_table(
+            "Observation added",
+            [("id", obs["id"]), ("phase", obs.get("phase")), ("created_at", obs["created_at"])],
+        ),
+    )
+
+
+@observations_group.command("delete")
+@click.argument("observation_id")
+@click.pass_context
+def observations_delete(ctx: click.Context, observation_id: str) -> None:
+    """Delete observation OBSERVATION_ID."""
+    with ctx.obj.client() as c:
+        c.delete(f"/observations/{observation_id}")
+    from rtd.output import console
+    console.print(f"deleted observation [bold]{observation_id}[/bold]")
+
+
+# ---------------------------------------------------------------------------
+# Findings import
+# ---------------------------------------------------------------------------
+
+
+@engagement_group.command("import-findings")
+@click.argument("slug")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def import_findings_cmd(ctx: click.Context, slug: str, file: str) -> None:
+    """Import findings from FILE (JSON array) into engagement SLUG.
+
+    All imported findings land as pending_validation for analyst review.
+
+    FILE must be a JSON array where each object has at minimum a ``title``
+    field. Optional fields: severity, phase, summary, target, source_tool,
+    details.
+
+    Example:
+        rtd engagement import-findings my-eng findings.json
+    """
+    with open(file) as fh:
+        try:
+            payload = json.load(fh)
+        except json.JSONDecodeError as exc:
+            from rtd.output import console
+            console.print(f"[red]invalid JSON:[/red] {exc}")
+            sys.exit(1)
+
+    if not isinstance(payload, list):
+        from rtd.output import console
+        console.print("[red]FILE must contain a JSON array of findings[/red]")
+        sys.exit(1)
+
+    with ctx.obj.client() as c:
+        findings = c.post(f"/engagements/{slug}/findings/import", json=payload)
+
+    t = Table(title=f"Imported findings → {slug}")
+    t.add_column("title")
+    t.add_column("severity", style="bold")
+    t.add_column("phase")
+    t.add_column("target")
+    for f in findings:
+        t.add_row(f["title"][:60], f["severity"], f["phase"], f.get("target") or "")
+    from rtd.output import console
+    emit(findings, json_mode=ctx.obj.json_mode, table=t)
+    if not ctx.obj.json_mode:
+        console.print(f"[green]{len(findings)} finding(s) imported as pending_validation[/green]")

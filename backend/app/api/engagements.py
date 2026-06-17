@@ -20,6 +20,12 @@ Endpoints::
 
     GET    /engagements/{slug}/findings                 -> list persisted findings
 
+    GET    /engagements/{slug}/observations              -> list observations
+    POST   /engagements/{slug}/observations              -> create observation
+    DELETE /observations/{observation_id}                -> delete observation
+
+    POST   /engagements/{slug}/findings/import           -> bulk import findings
+
     POST   /engagements/{slug}/runs                     -> enqueue run.start
 
 DELETE soft-archives the engagement (worker stops considering it for new runs
@@ -34,6 +40,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 from sqlalchemy import select, text
 
 from app.api.deps import CurrentUser, DbSession, RedisClient, RequireScope
@@ -47,7 +54,9 @@ from app.models import (
     Finding,
     FindingPhase,
     FindingStatus,
+    Observation,
     ScopeItem,
+    Severity,
 )
 from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
@@ -65,6 +74,7 @@ from app.schemas.engagement import (
     ScopeItemUpdate,
 )
 from app.schemas.finding import EntityRead, FindingRead, FindingValidate
+from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
 
 router = APIRouter()
@@ -121,6 +131,14 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
         audit_summary["first"] = str(audit_rows[0].created_at)
         audit_summary["last"] = str(audit_rows[-1].created_at)
 
+    observations = list(
+        session.execute(
+            select(Observation)
+            .where(Observation.engagement_id == eng.id)
+            .order_by(Observation.created_at)
+        ).scalars()
+    )
+
     return {
         "version": "1",
         "exported_at": str(datetime.now(tz=UTC)),
@@ -151,6 +169,14 @@ def _build_export_payload(session: DbSession, eng: Engagement) -> dict[str, Any]
                 "created_at": str(f.created_at),
             }
             for f in findings
+        ],
+        "observations": [
+            {
+                "content": o.content,
+                "phase": o.phase,
+                "created_at": str(o.created_at),
+            }
+            for o in observations
         ],
         "audit_summary": audit_summary,
     }
@@ -514,6 +540,133 @@ def validate_finding(
     session.commit()
     session.refresh(finding)
     return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Observations
+# ---------------------------------------------------------------------------
+
+
+@router.get("/engagements/{slug}/observations", response_model=list[ObservationRead])
+def list_observations(slug: str, session: DbSession) -> list[Observation]:
+    eng = _get_engagement_or_404(session, slug)
+    return list(
+        session.execute(
+            select(Observation)
+            .where(Observation.engagement_id == eng.id)
+            .order_by(Observation.created_at)
+        ).scalars()
+    )
+
+
+@router.post(
+    "/engagements/{slug}/observations",
+    response_model=ObservationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_observation(
+    slug: str,
+    body: ObservationCreate,
+    session: DbSession,
+    user: CurrentUser,
+) -> Observation:
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    obs = Observation(
+        engagement_id=eng.id,
+        content=body.content,
+        phase=body.phase,
+        created_by=user.id,
+    )
+    session.add(obs)
+    session.commit()
+    session.refresh(obs)
+    return obs
+
+
+@router.delete("/observations/{observation_id}", status_code=204)
+def delete_observation(
+    observation_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> Response:
+    obs = session.get(Observation, observation_id)
+    if obs is None:
+        raise HTTPException(status_code=404, detail="observation not found")
+    session.delete(obs)
+    session.commit()
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Findings import
+# ---------------------------------------------------------------------------
+
+
+class FindingImport(BaseModel):
+    """Single finding in a bulk import payload."""
+
+    title: str
+    severity: Severity = Severity.info
+    phase: FindingPhase = FindingPhase.general
+    summary: str | None = None
+    target: str | None = None
+    source_tool: str | None = "import"
+    details: dict[str, Any] = {}
+
+
+@router.post(
+    "/engagements/{slug}/findings/import",
+    response_model=list[FindingRead],
+    status_code=status.HTTP_201_CREATED,
+)
+def import_findings(
+    slug: str,
+    body: list[FindingImport],
+    session: DbSession,
+    user: CurrentUser,
+) -> list[dict[str, Any]]:
+    """Bulk-import findings from an external source (scanner output, prior report, etc.).
+
+    All imported findings land as ``pending_validation`` so the analyst can
+    review before they become report-eligible. ``source_tool`` defaults to
+    ``'import'`` if omitted.
+    """
+    if not body:
+        return []
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    created: list[Finding] = []
+    for item in body:
+        f = Finding(
+            engagement_id=eng.id,
+            title=item.title,
+            severity=item.severity,
+            phase=item.phase,
+            summary=item.summary,
+            target=item.target,
+            source_tool=item.source_tool or "import",
+            details=item.details,
+            status=FindingStatus.pending_validation,
+        )
+        session.add(f)
+        created.append(f)
+
+    session.add(
+        AuditLog(
+            engagement_id=eng.id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="findings.imported",
+            payload={"count": len(created), "source": "bulk_import"},
+        )
+    )
+    session.commit()
+    for f in created:
+        session.refresh(f)
+    return [_finding_to_read(f) for f in created]
 
 
 # ---------------------------------------------------------------------------
