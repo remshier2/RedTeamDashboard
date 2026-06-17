@@ -113,6 +113,25 @@ export function deleteScopeItem(slug: string, scopeId: string): Promise<void> {
   });
 }
 
+export function parseScope(
+  text: string,
+): Promise<import("@/lib/types").ScopeImportPreview> {
+  return request<import("@/lib/types").ScopeImportPreview>("/scope/parse", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function importScope(
+  slug: string,
+  text: string,
+): Promise<import("@/lib/types").ScopeImportResult> {
+  return request<import("@/lib/types").ScopeImportResult>(
+    `/engagements/${slug}/scope/import`,
+    { method: "POST", body: JSON.stringify({ text }) },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Findings
 // ---------------------------------------------------------------------------

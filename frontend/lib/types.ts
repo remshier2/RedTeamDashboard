@@ -149,6 +149,40 @@ export interface Observation {
   created_at: string;
 }
 
+// ─── Scope bulk-import ─────────────────────────────────────────────────────
+
+export interface ScopeImportPreviewRow {
+  line: number;
+  value: string;
+  kind: ScopeKind;
+  is_exclusion: boolean;
+}
+
+export interface ScopeImportErrorRow {
+  line: number;
+  raw: string;
+  reason: string;
+}
+
+export interface ScopeImportDuplicateRow {
+  line: number;
+  value: string;
+  kind: ScopeKind;
+  is_exclusion: boolean;
+}
+
+export interface ScopeImportPreview {
+  preview: ScopeImportPreviewRow[];
+  errors: ScopeImportErrorRow[];
+  would_create: number;
+}
+
+export interface ScopeImportResult {
+  created: ScopeItem[];
+  errors: ScopeImportErrorRow[];
+  duplicates: ScopeImportDuplicateRow[];
+}
+
 export type LLMProvider = "anthropic" | "openai" | "azure" | "ollama";
 
 export interface RunModel {
