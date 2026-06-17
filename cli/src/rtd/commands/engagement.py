@@ -138,3 +138,72 @@ def scope_remove(ctx: click.Context, slug: str, scope_id: str) -> None:
         c.delete(f"/engagements/{slug}/scope/{scope_id}")
     from rtd.output import console
     console.print(f"removed scope item [bold]{scope_id}[/bold]")
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+
+@engagement_group.command("export")
+@click.argument("slug")
+@click.pass_context
+def export_cmd(ctx: click.Context, slug: str) -> None:
+    """Export engagement SLUG data to blob storage. Requires admin key."""
+    with ctx.obj.client() as c:
+        result = c.post(f"/engagements/{slug}/export")
+    if result.get("blob_url"):
+        from rtd.output import console
+        console.print(f"exported: [bold]{result['blob_url']}[/bold]")
+    else:
+        emit(result, json_mode=ctx.obj.json_mode, table=kv_table(
+            f"export ({slug})",
+            [("slug", result.get("slug")), ("blob_url", result.get("blob_url") or "none — returned inline")],
+        ))
+
+
+@engagement_group.command("archive")
+@click.argument("slug")
+@click.pass_context
+def archive_cmd(ctx: click.Context, slug: str) -> None:
+    """Export and archive engagement SLUG. Requires admin key.
+
+    Marks the engagement as done. It stays in the database but is excluded
+    from active views. Reversible via PATCH /engagements/{slug}.
+    """
+    with ctx.obj.client() as c:
+        result = c.delete(f"/engagements/{slug}")
+    emit(
+        result,
+        json_mode=ctx.obj.json_mode,
+        table=kv_table(
+            f"archived {slug!r}",
+            [("slug", result["slug"]), ("status", result["status"]),
+             ("archived_at", result.get("archived_at"))],
+        ),
+    )
+
+
+@engagement_group.command("flush")
+@click.argument("slug")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def flush_cmd(ctx: click.Context, slug: str, yes: bool) -> None:
+    """Permanently delete ALL data for engagement SLUG. Requires admin key.
+
+    An export is created in blob storage first (if configured).
+    This cannot be undone.
+    """
+    if not yes:
+        click.confirm(
+            f"Permanently flush ALL data for engagement '{slug}'? This cannot be undone.",
+            abort=True,
+        )
+    with ctx.obj.client() as c:
+        result = c.post(f"/engagements/{slug}/flush")
+    from rtd.output import console
+    console.print(f"[bold red]flushed[/bold red] {slug!r}")
+    if result.get("blob_url"):
+        console.print(f"  export: {result['blob_url']}")
+    else:
+        console.print(f"  [yellow]{result.get('note', 'no blob configured')}[/yellow]")

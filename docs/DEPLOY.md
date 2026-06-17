@@ -1,10 +1,9 @@
 # Red Team Dashboard — Deploy & Operate
 
 How the system is wired, how to stand up a fresh environment in your own
-Azure tenant, and how to use it day-to-day. Verified end-to-end on
-2026-06-03 against `rtd-personal` / `centralus`.
+Azure tenant, and how to use it day-to-day.
 
-## Architecture in one picture
+## Architecture
 
 ```
 Operator / teammate
@@ -13,297 +12,297 @@ Operator / teammate
    (Entra-gated)          │                       │
                           ▼                       ▼
    ┌──────────────────────────────────────────────────────┐
-   │  Azure RG: rtd-<env>  (one per deployment)           │
+   │  Azure RG: rtd-<env>                                 │
    │                                                      │
-   │  Static Web App: rtd-<env>-viewer                    │
-   │   Entra ID gated · serves the Next.js static bundle  │
+   │  Static Web App: rtd-<env>-viewer (Free SKU)         │
+   │   serves the Next.js static bundle                   │
    │                          │                           │
-   │   reads from ┄┄┄┄┄┄┄┄┄┄┄┄┘                           │
+   │   reads from ┄┄┄┄┄┄┄┄┄┄┄┘                           │
    │                                                      │
-   │  Container App: rtd-<env>-app                        │
-   │  ┌─────────┐  ┌─────────┐  ┌──────────────┐          │
-   │  │ backend │  │ worker  │  │ redis:7      │          │
-   │  │ uvicorn │  │ langgr. │  │ localhost    │          │
-   │  │ :8000   │  │         │  │ :6379        │          │
-   │  └────┬────┘  └────┬────┘  └──────┬───────┘          │
-   │       │ 127.0.0.1 between all three                  │
-   │       │                                              │
-   │       ▼               ▼                              │
-   │  Postgres FS     Key Vault (RBAC)                    │
-   │  (public + AZ    pg pw, db url,                      │
-   │   firewall rule) LLM keys, admin key                 │
+   │  VNet: 10.0.0.0/16                                   │
+   │  ┌─────────────────────────────────────────────┐     │
+   │  │ Subnet: container-apps  10.0.0.0/23         │     │
+   │  │  Container Apps Env (Consumption)            │     │
+   │  │  Container App: rtd-<env>-app                │     │
+   │  │  ┌──────────┐ ┌────────┐ ┌────────────┐     │     │
+   │  │  │ backend  │ │ worker │ │ redis:7    │     │     │
+   │  │  │ uvicorn  │ │ lang   │ │ localhost  │     │     │
+   │  │  │ :8000    │ │ graph  │ │ :6379      │     │     │
+   │  │  └────┬─────┘ └───┬────┘ └─────┬──────┘     │     │
+   │  │       │    127.0.0.1            │            │     │
+   │  └───────┼─────────────────────────────────────┘     │
+   │          │                                            │
+   │  ┌───────┼─────────────────────────────────────┐     │
+   │  │ Subnet: postgres  10.0.4.0/28               │     │
+   │  │  Postgres Flexible Server (private only)    │     │
+   │  └─────────────────────────────────────────────┘     │
    │                                                      │
-   │  Log Analytics  +  CAE (no VNet)                     │
+   │  Key Vault (RBAC)   Log Analytics   App Insights     │
+   │  pg pw, db url,     container logs  traces + errors  │
+   │  LLM keys, api key                                   │
    └──────────────────────────────────────────────────────┘
 ```
 
 **Why one app with three containers:** Container Apps' internal env VIP
-only routes 80/443 — it can't carry TCP/6379 between sibling apps, even
-with VNet integration. Colocation in the same pod means
-backend/worker/redis talk via `127.0.0.1` and never need env routing. The
-trade-off: single replica only.
+only routes 80/443 — it can't carry TCP/6379 between sibling apps. Colocation
+means backend/worker/redis talk via `127.0.0.1`. Trade-off: single replica only.
+
+**Postgres network model:** The Postgres server is VNet-injected into a
+dedicated /28 subnet with `publicNetworkAccess: Disabled`. It is unreachable
+from the internet; only traffic from within the VNet (the Container Apps
+subnet) can connect. A private DNS zone resolves the server hostname inside
+the VNet.
 
 ## Prereqs (one-time on your machine)
 
 ```bash
-# Azure CLI + Bicep
 az --version              # any 2.50+
 az bicep install
-az login                  # opens browser
-az account set --subscription rtd-personal   # whatever your sub is named
-
-# Other tools
-openssl version           # for the install script to generate the pg pw
-python3 --version         # install.sh uses python3 for JSON parsing
-gh --version              # only needed if you'll cut releases
-node --version            # 18+; needed for the SWA CLI viewer deploy step
-                          # (npx fetches @azure/static-web-apps-cli on first run)
-
-# Pin your subscription so you don't accidentally deploy elsewhere
-az account show --query 'name'
+az login
+az account set --subscription <your-sub>
+openssl version           # for postgres password generation
+python3 --version         # for JSON parsing in install.sh
+docker --version          # for building + deploying the viewer bundle
 ```
 
-## Deploy a fresh environment in ~8 minutes
+## Deploy a fresh environment
 
 ```bash
 git clone https://github.com/DonPercival0x45/RedTeamDashboard.git
 cd RedTeamDashboard
 
-./infra/azure-kit/scripts/install.sh --env prod --location centralus --yes
+./infra/azure-kit/scripts/install.sh \
+    --env prod \
+    --location centralus \
+    --anthropic-key sk-ant-… \
+    --yes
 ```
 
-That's the whole thing. Flags:
+That's it. The script handles everything end-to-end in ~10 minutes.
 
-- `--env <name>` — becomes the resource prefix (`rtd-<env>-app`,
-  `rtd-<env>-kv`, RG `rtd-<env>`). Defaults to `prod`.
-- `--location centralus` — required on Pay-As-You-Go / personal subs.
-  `eastus2` and `eastus` hit `LocationIsOfferRestricted` on Postgres
-  Flexible Server.
-- `--image-tag latest` — defaults to `:latest`, pulls
-  `ghcr.io/donpercival0x45/rtd-{backend,worker}:latest`. Pin a version
-  in production.
-- `--image-repo-owner <gh-user>` — override if you forked and republish.
-- `--entra-tenant-id <id>` / `--entra-client-id <id>` — enable per-analyst
-  Entra SSO (from `setup-entra.sh`; see `docs/ENTRA_SETUP.md`). Both set →
-  the backend validates SSO tokens and the viewer is built with sign-in on.
-  Omit → API-key auth only. The viewer is built from your checkout at install
-  time (in Docker) so this tenant's API URL + Entra IDs are baked into the
-  static bundle.
-- `--yes` skips the confirmation prompt.
+**What happens:**
 
-What it does (~8 min wall-clock):
+1. Generates a random Postgres admin password
+2. Runs the Bicep deploy — VNet, Postgres (private), Key Vault, Log Analytics,
+   App Insights, Container Apps env, the one Container App, Static Web App
+3. Forces a fresh revision to clear the KV identity propagation race on first deploy
+4. Polls `/health` every 6s — the backend runs `alembic upgrade head` before
+   uvicorn starts, so the schema is initialized by the time health turns green
+5. Builds the Next.js viewer in Docker with this deployment's API URL baked in
+   and pushes it to the Static Web App
+6. Grants your user Key Vault Secrets Officer, mints the bootstrap admin API key,
+   prompts you to paste it back so it's stored in KV, stores your LLM key(s)
+7. Restarts the app to pick up the newly stored KV secrets
+8. Prints the viewer URL and quick-start link for your teammate
 
-1. Generates a random Postgres admin password.
-2. `az deployment sub create` against `infra/azure-kit/main.bicep` —
-   provisions RG, Log Analytics, Postgres Flexible Server (Burstable B1ms,
-   public + AllowAzureServices firewall), Container Apps Env
-   (Consumption-only), Key Vault (RBAC mode), and the one Container App
-   with three containers.
-3. Forces a fresh revision — the first revision races KV→AAD identity
-   propagation and KV refs return 403; bumping makes the second revision
-   pick up the now-propagated identity.
-4. Curls `/health` every 6s for 240s — exits 0 when
-   `{"db":true,"redis":true}`.
-5. Prints the manual bootstrap commands.
+**Flags:**
 
-## Bootstrap (4 paste-able command groups)
-
-The install script prints these at the end with the right names filled in.
-The pattern:
-
-```bash
-# 1. Apply migrations (3 of them; idempotent)
-script -qc "az containerapp exec \
-    -n rtd-prod-app -g rtd-prod --container backend \
-    --command 'alembic upgrade head'" /dev/null
-
-# 2. Mint your bootstrap admin key — COPY THE rtd_… TOKEN. It cannot be
-#    retrieved again.
-script -qc "az containerapp exec \
-    -n rtd-prod-app -g rtd-prod --container backend \
-    --command 'python -m app.scripts.mint_api_key --name bootstrap --scope admin'" /dev/null
-
-# 3. One-time per RG: grant YOURSELF data-plane access to the new Key Vault.
-#    (Subscription Owner doesn't auto-inherit KV data-plane in RBAC mode.)
-ME=$(az ad signed-in-user show --query id -o tsv)
-KV_ID=$(az keyvault show -n rtd-prod-kv --query id -o tsv)
-az role assignment create --role "Key Vault Secrets Officer" --assignee "$ME" --scope "$KV_ID"
-sleep 60  # AAD propagation
-
-# 4. Stash the admin key + your LLM key(s) in KV
-az keyvault secret set --vault-name rtd-prod-kv --name admin-api-key      --value 'rtd_…paste…'
-az keyvault secret set --vault-name rtd-prod-kv --name anthropic-api-key  --value 'sk-ant-…'
-
-# 5. Restart so the new LLM key gets picked up
-REV=$(az containerapp revision list -n rtd-prod-app -g rtd-prod \
-    --query '[?properties.active].name | [0]' -o tsv)
-az containerapp revision restart -n rtd-prod-app -g rtd-prod --revision "$REV"
-```
-
-The `script -qc "..." /dev/null` wrapper gives `az containerapp exec` a
-TTY — without it you get `Inappropriate ioctl for device`.
-
-After step 5, `/health` is green and the worker has a valid LLM key.
-Operational.
+| Flag | Default | Notes |
+|---|---|---|
+| `--env` | `prod` | Prefix for all resource names |
+| `--location` | `eastus2` | Use `centralus` on PAYG/personal subs |
+| `--image-tag` | `latest` | Pin a version in production |
+| `--anthropic-key` | `$ANTHROPIC_API_KEY` | Stored in KV; prompted if missing |
+| `--openai-key` | `$OPENAI_API_KEY` | Stored in KV if provided |
+| `--llm-provider` | `anthropic` | `anthropic \| openai \| azure` |
+| `--entra-tenant-id` | *(blank)* | Enables per-analyst SSO |
+| `--entra-client-id` | *(blank)* | Required with `--entra-tenant-id` |
+| `--yes` | *(interactive)* | Skip confirmation prompt |
 
 ## Day-to-day operation
 
-### CLI (preferred for mutations)
-
-The CLI isn't on PyPI yet (Trusted Publisher setup pending). Install from
-source:
+### CLI
 
 ```bash
-pip install -e ./cli   # or: pipx install ./cli
+pip install -e ./cli
 rtd --version
-```
 
-```bash
-# Save a profile (URL + API key) — auto-persists to ~/.config/rtd/config.toml (0600)
 rtd login --profile prod \
-  --url https://rtd-prod-app.<env-suffix>.<region>.azurecontainerapps.io \
+  --url https://<app-fqdn>.azurecontainerapps.io \
   --key rtd_yourtoken \
   --default
 
-# Day-to-day flow
 rtd engagement create "Acme Q3 Pentest"
 rtd engagement scope add acme-q3-pentest --kind domain --value acme.com
 rtd run start acme-q3-pentest -p "Run passive OSINT on acme.com" --tail
-#  ↑ --tail streams SSE events to your terminal until the run completes
 
-# When an active-tool approval prompt arrives:
-rtd approve <approval-id>             # approve as-is
-rtd approve <approval-id> --remember  # approve + create a session grant
+rtd approve <approval-id>
+rtd approve <approval-id> --remember   # creates a session grant
 rtd approve <approval-id> --deny --reason "out of scope"
-rtd approve <approval-id> --edit port=8443  # edit args then approve
-
-rtd grants list acme-q3-pentest       # see active session grants
-rtd grants revoke <grant-id>          # revoke one
 
 rtd findings list acme-q3-pentest --severity high
-rtd tail acme-q3-pentest              # late-join an in-flight stream
+rtd tail acme-q3-pentest
 ```
 
-### Viewer (browser GUI — full CLI parity)
+### Browser viewer
 
-The kit provisions an **Azure Static Web App (Free SKU)** in your RG and
-pushes the viewer bundle to it. The viewer's URL is printed at the end of
-`install.sh`:
+The viewer URL is printed at the end of `install.sh`. Share the quick-start
+link with your teammate — it pre-fills the backend URL so they only need to
+paste their API key.
 
-```
-Viewer URL:  https://rtd-<env>-viewer-<hash>.<region>.azurestaticapps.net
-```
-
-**Sharing it with a teammate.** install.sh also prints a magic link
-that pre-fills the source form so the tester only needs to paste their
-own API key:
-
-```
-https://<viewer>/sources?url=https%3A%2F%2Frtd-prod-app...&name=prod
-```
-
-Each tester mints their own scoped key:
+**Minting scoped keys for analysts:**
 
 ```bash
-# CLI scope: full GUI control (create/scope/run/approve). For most testers.
-script -qc "az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
-  --command 'python -m app.scripts.mint_api_key --name nasir-browser --scope cli'" /dev/null
+# Full control (create engagements, run OSINT, approve tools)
+az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+    --command 'python -m app.scripts.mint_api_key --name alice --scope cli'
 
-# Viewer scope: read-only — buttons hide in the UI.
-script -qc "az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
-  --command 'python -m app.scripts.mint_api_key --name auditor-laptop --scope viewer'" /dev/null
+# Read-only (browse findings, download reports — no write buttons in UI)
+az containerapp exec -n rtd-prod-app -g rtd-prod --container backend \
+    --command 'python -m app.scripts.mint_api_key --name bob-readonly --scope viewer'
 ```
 
-Tester opens the magic link, signs into Entra in YOUR tenant, pastes
-their key → engagement list renders, scope-aware buttons reflect their
-key's permissions.
-
-**Security model:** the **backend API key** is the only auth layer. The
-viewer's static shell has nothing sensitive in it — no API keys, no
-tenant data, no secrets baked into the JS bundle. Loading the page only
-gives you a "Add a source" form. You can't read findings, scope, or
-events without pasting a valid API key.
-
-This is the same model most modern SPAs use (auth at the API layer, not
-at the static-content layer). Trade-off: anyone with the URL can load
-the empty viewer shell. They can't *do* anything without a key minted by
-you.
-
-**Want page-load gating via Entra ID?** SWA's custom-auth block requires
-the **Standard SKU (~$9/mo per deployment)**, not Free. To upgrade:
-
-1. In `infra/azure-kit/modules/viewer.bicep`, set `sku.name = 'Standard'`
-   and `sku.tier = 'Standard'`.
-2. Restore an `auth` block to `frontend/public/staticwebapp.config.json`
-   (see git history pre-`v0.2.0` for the previous shape).
-3. Run `az ad app create` + `az staticwebapp appsettings set` to wire
-   the AAD app registration (see git history of `install.sh` for the
-   automation we had before).
-
-That gives you tenant-scoped Entra sign-in *on top of* the API key.
-
-**Local development.** For hacking on the viewer itself:
+## Operations
 
 ```bash
-cd RedTeamDashboard
-docker compose -f infra/docker-compose.yml up -d frontend
-# Browser → http://localhost:3001
-```
+# Tail container logs
+az containerapp logs show -n rtd-prod-app -g rtd-prod \
+    --container backend --tail 60 --format text
 
-`http://localhost:3001` is in the default `extraCorsAllowOrigins` so the
-deployed backend accepts requests from it.
-
-## Operations / troubleshooting
-
-```bash
-# Backend logs (last 60 lines from the active replica)
-script -qc "az containerapp logs show -n rtd-prod-app -g rtd-prod \
-    --container backend --tail 60 --format text" /dev/null
-
-# Worker logs — same pattern with --container worker
-# Redis logs — same with --container redis
-
-# Force a fresh revision after rotating a KV secret
+# Restart after rotating a KV secret
 REV=$(az containerapp revision list -n rtd-prod-app -g rtd-prod \
     --query '[?properties.active].name | [0]' -o tsv)
 az containerapp revision restart -n rtd-prod-app -g rtd-prod --revision "$REV"
 
-# Re-deploy the same kit (idempotent — Bicep no-ops anything unchanged)
-./infra/azure-kit/scripts/install.sh --env prod --location centralus --yes \
-    --image-tag v0.2.0     # roll to a new image
+# Roll to a new image (re-running install is idempotent)
+./infra/azure-kit/scripts/install.sh --env prod --location centralus \
+    --image-tag v0.2.0 --yes
 
-# Tear it all down — single command, no leftovers
+# Tear everything down
 az group delete -n rtd-prod -y
 ```
 
-## Costs you should expect
+## Entra ID SSO (optional)
+
+Run `setup-entra.sh` before `install.sh` to create the app registration, then
+pass the IDs to the installer:
+
+```bash
+./infra/azure-kit/scripts/setup-entra.sh \
+    --env prod \
+    --viewer-url https://<viewer>.azurestaticapps.net
+
+./infra/azure-kit/scripts/install.sh \
+    --env prod \
+    --location centralus \
+    --entra-tenant-id <tenant-id> \
+    --entra-client-id <client-id> \
+    --anthropic-key sk-ant-… \
+    --yes
+```
+
+See `docs/ENTRA_SETUP.md` for the full walkthrough.
+
+## MCP server (Claude Code)
+
+The backend exposes an MCP server at `/mcp/sse`. Any MCP-compatible agent can connect to it using an RTD API key — Claude Code is the primary intended client.
+
+**Connect Claude Code:**
+
+```bash
+claude mcp add rtd-prod \
+    --transport sse \
+    --url https://<app-fqdn>.azurecontainerapps.io/mcp/sse \
+    --header 'X-API-Key: rtd_yourtoken'
+```
+
+The install script prints this exact command (with the FQDN filled in) at the end of step 6.
+
+**Two orchestration modes:**
+
+| Mode | How | LLM cost | Analyst in loop |
+|---|---|---|---|
+| Autonomous | `rtd run start <slug> -p "..."` | Anthropic API key | No |
+| Interactive | Claude Code + MCP | Claude Max subscription | Yes |
+
+Both modes write findings to the same database. The viewer shows results from either.
+
+**What the MCP server exposes:**
+
+- *Passive tools* (dns_lookup, whois_lookup, crt_sh, httpx_probe, subfinder, reverse_dns) — run freely, scope-checked server-side
+- *Active tools* (port_scan, subnet_sweep, service_detect) — Claude Code asks the analyst before calling
+- *Engagement tools* (list/create engagements, get/add scope, list/create findings)
+- *Lifecycle tools* (export_engagement, archive_engagement, flush_engagement_data)
+- *Resources* (engagements://list, engagement://{slug}, findings://{slug}) — for agent context
+- *Prompts* (passive_recon, active_enum, deep_dive) — structured workflow templates
+
+**Authentication:** every request to `/mcp/*` requires `X-API-Key`. A `cli` scoped key covers OSINT tools and findings; `admin` scope is required for archive and flush.
+
+## Engagement lifecycle
+
+Engagements move through three states: **active → archived → flushed**.
+
+```
+active   → archived   → flushed
+(visible)  (hidden)     (gone from DB, blob only)
+```
+
+**Archive** — marks an engagement done. Stays in the database but is excluded from active views. An export JSON is uploaded to blob storage first.
+
+```bash
+rtd engagement archive acme-q3          # requires admin key
+# or via MCP: archive_engagement("acme-q3")
+```
+
+**Flush** — permanently deletes all engagement data from the database: findings, scope, approvals, and audit logs. Export is uploaded to blob first. Cannot be undone.
+
+```bash
+rtd engagement flush acme-q3            # prompts for confirmation
+rtd engagement flush acme-q3 --yes      # skip prompt (scripts)
+# or via MCP: flush_engagement_data("acme-q3", confirmed=True)
+```
+
+**Export only** — upload a snapshot to blob without changing status. Useful for point-in-time backups mid-engagement.
+
+```bash
+# CLI: use the API directly
+curl -X POST https://<fqdn>/engagements/acme-q3/export \
+    -H "X-API-Key: rtd_admintoken"
+# or via MCP: export_engagement("acme-q3")
+```
+
+**Blob storage:** exports land at
+```
+https://<storage-account>.blob.core.windows.net/engagement-exports/<slug>/<YYYYMMDDTHHMMSSz>.json
+```
+
+The storage account name is printed at the end of `install.sh` and in the Bicep outputs (`storageAccountName`). The container app's managed identity has `Storage Blob Data Contributor` — no connection string needed.
+
+**Typical quarterly rhythm:**
+1. Create engagement, add scope, run recon over 1-2 months
+2. Write the report from validated findings
+3. `rtd engagement archive <slug>` — export + hide from viewer
+4. Start next engagement; old data is safely in blob if you ever need it
+5. `rtd engagement flush <slug>` — once you're confident the blob is sufficient
+
+## Expected costs
 
 | Resource | ~Monthly |
 |---|---|
 | Postgres Flexible Server B1ms | $13 |
-| Container App (0.75 vCPU / 2 GiB total, 1 replica) | $10–15 |
-| Key Vault (Standard) | <$1 |
+| Container App (1.5 vCPU / 3 GiB, 1 replica) | $15–20 |
+| Key Vault Standard | <$1 |
 | Log Analytics (low ingest) | $1–5 |
-| **Total per deployment** | **~$25–35/mo** |
+| App Insights (first 5 GB free) | $0–2 |
+| Blob Storage LRS Cool (engagement exports) | <$1 |
+| VNet, DNS zone, SWA Free | $0 |
+| **Total** | **~$30–41/mo** |
 
-Postgres is the floor. If you blow away the RG between engagements you save
-it, but you also lose history.
+## Things to know
 
-## Things to know before you do this in earnest
-
-- **Single replica is non-negotiable** with this architecture. If you
-  outgrow it, the answer is Azure Managed Redis as a separate resource
-  (~$50/mo) and unfreezing `minReplicas`.
-- **Persistence is off** for the in-pod Redis
-  (`--save '' --appendonly no`). On revision restarts the job queue + run
-  checkpoints reset. Acceptable for one operator; not for shared multi-day
-  runs.
-- **CI does not deploy.** Releases tag GHCR images + the kit tarball; you
-  run the kit yourself. There is no central control plane that pushes to
-  your tenant.
-- **GHCR is public** so you don't need any registry credentials in the
-  kit. If you fork and republish under your own user, override
-  `--image-repo-owner <yourname>`.
-- **Default region in `main.bicep` is `eastus2`** but PAYG/personal subs
-  reject Postgres there. Use `--location centralus` until you're on an
-  EA/CSP sub.
+- **Single replica is non-negotiable** with this architecture. Outgrowing it
+  means adding Azure Managed Redis as a separate resource (~$50/mo) and
+  raising `minReplicas`.
+- **Redis has no persistence** (`--save '' --appendonly no`). A container
+  restart drops the job queue. In-progress LangGraph runs survive because
+  checkpoints are in Postgres.
+- **Alembic runs automatically** on every container start (`alembic upgrade head`
+  before uvicorn). It is idempotent — a no-op if the schema is current. No
+  manual migration step is needed.
+- **Postgres is private.** There is no public endpoint. The Container Apps
+  environment is on the same VNet and resolves the hostname via the private
+  DNS zone. The Azure portal's query editor will not reach it — use
+  `az containerapp exec` to run psql inside the backend container if needed.
+- **CI does not deploy.** Releases tag GHCR images; you run the kit yourself.
+- **Default region is `eastus2`** but PAYG/personal subs reject Postgres there.
+  Use `--location centralus` until on an EA/CSP sub.

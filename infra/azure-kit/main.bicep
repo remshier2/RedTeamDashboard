@@ -1,29 +1,27 @@
 // Red Team Dashboard — Deployment Kit (subscription-scoped).
 //
 // Provisions, in one resource group, the per-tenant backend an operator owns:
+//   - VNet with two delegated subnets (Container Apps /23, Postgres /28)
+//   - Private DNS zone for Postgres VNet injection
 //   - Log Analytics workspace
-//   - Postgres Flexible Server (Burstable B1ms)
-//   - Container Apps Environment (Consumption-only, no VNet)
+//   - Application Insights (workspace-based)
+//   - Postgres Flexible Server — VNet-injected, no public access
 //   - Key Vault (RBAC mode) with seeded secrets
-//   - One Container App with three colocated containers: backend, worker,
-//     redis. They share `127.0.0.1` so no cross-app internal TCP is needed.
-//     Single replica (minReplicas=maxReplicas=1) — sharing localhost requires
-//     same pod.
-//   - Azure Static Web App hosting the viewer (gated by Entra ID). The kit's
-//     install.sh pushes the prebuilt static bundle after Bicep returns.
+//   - Container Apps Environment (Consumption, VNet-integrated)
+//   - One Container App with three colocated containers: backend, worker, redis
+//   - Azure Static Web App hosting the viewer (gated by Entra ID)
 //
 // What's NOT here:
-//   - The viewer: hosted centrally; the operator plugs in this deployment's
-//     backend URL + an API key from the central viewer's UI.
 //   - Any container registry: images are public on GHCR. No auth needed.
 //   - LLM API keys: placeholders in Key Vault; operator populates after deploy.
+//   - Azure OpenAI resource: provision separately and populate the KV secrets
+//     if using llmProvider=azure. Default is anthropic.
 //   - The admin API key: installer mints it from the running backend after
-//     the deploy completes (so the schema exists) and overwrites the
-//     `admin-api-key` placeholder secret.
+//     the deploy completes and overwrites the admin-api-key placeholder.
 //
 // The kit is designed for the operator to run once per engagement (or once
 // total, then archive engagements via the API). Teardown is a single
-// `az group delete` — see scripts/uninstall.sh.
+// `az group delete`.
 
 targetScope = 'subscription'
 
@@ -76,6 +74,44 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   tags: tags
 }
 
+// ---------------------------------------------------------------------------
+// Networking — VNet + private DNS zone for Postgres
+// ---------------------------------------------------------------------------
+
+module vnet 'modules/vnet.bicep' = {
+  name: 'vnet'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
+// Private DNS zone so VNet-injected Postgres is reachable by hostname from
+// within the VNet. The zone name is the fixed Azure suffix for Postgres
+// Flexible Server private access.
+resource pgDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.postgres.database.azure.com'
+  location: 'global'
+  tags: tags
+  scope: rg
+}
+
+resource pgDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: pgDnsZone
+  name: '${namePrefix}-pg-dns-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.outputs.vnetId }
+    registrationEnabled: false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
 module logs 'modules/loganalytics.bicep' = {
   name: 'logs'
   scope: rg
@@ -86,6 +122,21 @@ module logs 'modules/loganalytics.bicep' = {
   }
 }
 
+module ai 'modules/appinsights.bicep' = {
+  name: 'appinsights'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    workspaceId: logs.outputs.workspaceId
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Data tier
+// ---------------------------------------------------------------------------
+
 module postgres 'modules/postgres.bicep' = {
   name: 'postgres'
   scope: rg
@@ -95,29 +146,10 @@ module postgres 'modules/postgres.bicep' = {
     tags: tags
     adminLogin: postgresAdminLogin
     adminPassword: postgresAdminPassword
+    delegatedSubnetId: vnet.outputs.postgresSubnetId
+    privateDnsZoneId: pgDnsZone.id
   }
-}
-
-module caenv 'modules/containerappsenv.bicep' = {
-  name: 'containerappsenv'
-  scope: rg
-  params: {
-    namePrefix: namePrefix
-    location: location
-    tags: tags
-    logAnalyticsCustomerId: logs.outputs.customerId
-    logAnalyticsPrimarySharedKey: logs.outputs.primarySharedKey
-  }
-}
-
-module viewer 'modules/viewer.bicep' = {
-  name: 'viewer'
-  scope: rg
-  params: {
-    namePrefix: namePrefix
-    location: location
-    tags: tags
-  }
+  dependsOn: [ pgDnsVnetLink ]
 }
 
 module kv 'modules/keyvault.bicep' = {
@@ -132,7 +164,47 @@ module kv 'modules/keyvault.bicep' = {
   }
 }
 
-// Image refs the container apps pull from GHCR. Public; no registry creds.
+// ---------------------------------------------------------------------------
+// Storage — engagement export archive (blob)
+// ---------------------------------------------------------------------------
+
+module storage 'modules/storage.bicep' = {
+  name: 'storage'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Compute tier
+// ---------------------------------------------------------------------------
+
+module caenv 'modules/containerappsenv.bicep' = {
+  name: 'containerappsenv'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    logAnalyticsCustomerId: logs.outputs.customerId
+    logAnalyticsPrimarySharedKey: logs.outputs.primarySharedKey
+    infrastructureSubnetId: vnet.outputs.containerAppsSubnetId
+  }
+}
+
+module viewer 'modules/viewer.bicep' = {
+  name: 'viewer'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
 var backendImage = 'ghcr.io/${imageRepoOwner}/rtd-backend:${imageTag}'
 var workerImage = 'ghcr.io/${imageRepoOwner}/rtd-worker:${imageTag}'
 
@@ -150,11 +222,37 @@ module apps 'modules/containerapps.bicep' = {
     workerImage: workerImage
     llmProvider: llmProvider
     anthropicModel: anthropicModel
-    // Auto-append the in-tenant viewer's URL so the browser at that origin
-    // can call the backend without any manual CORS plumbing.
     corsAllowOrigins: '${extraCorsAllowOrigins},${viewer.outputs.url}'
     entraTenantId: entraTenantId
     entraClientId: entraClientId
+    appInsightsConnectionString: ai.outputs.connectionString
+    storageAccountName: storage.outputs.storageAccountName
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
+
+// Grant the container app's managed identity Storage Blob Data Contributor
+// on the exports account so the backend can upload without a connection string.
+var storageBlobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+
+resource storageAccountRef 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
+  name: storage.outputs.storageAccountName
+  scope: rg
+}
+
+resource appStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.outputs.storageAccountId, apps.outputs.appPrincipalId, storageBlobContributorRoleId)
+  scope: storageAccountRef
+  properties: {
+    principalId: apps.outputs.appPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      storageBlobContributorRoleId
+    )
   }
 }
 
@@ -165,3 +263,5 @@ output keyVaultName string = kv.outputs.name
 output postgresFqdn string = postgres.outputs.fqdn
 output viewerName string = viewer.outputs.name
 output viewerUrl string = viewer.outputs.url
+output appInsightsName string = ai.outputs.name
+output storageAccountName string = storage.outputs.storageAccountName

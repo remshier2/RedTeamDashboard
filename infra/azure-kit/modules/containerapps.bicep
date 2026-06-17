@@ -2,10 +2,10 @@
 //
 // Why one app, not three:
 //   Internal TCP routing on non-HTTP ports doesn't work in Consumption-profile
-//   Container Apps envs — even with VNet integration the env-VIP only routes
-//   80/443. Yesterday's three-app design (backend + worker + a self-hosted
-//   redis app) had backend timing out connecting to `redis.internal.<env>:6379`.
-//   Dedicated workload profiles fix it but cost ~$130-200/mo.
+//   Container Apps envs — the env-VIP only routes 80/443. The three-app design
+//   (backend + worker + a self-hosted redis app) had backend timing out
+//   connecting to `redis.internal.<env>:6379`. Dedicated workload profiles fix
+//   it but cost ~$130-200/mo.
 //
 //   For a single-user red-team tool, colocating the three containers in ONE
 //   Container App lets them talk via `127.0.0.1` — no env routing involved.
@@ -40,6 +40,12 @@ param corsAllowOrigins string = 'http://localhost:3001,http://127.0.0.1:3001'
 @description('Entra tenant + app (client) id for analyst SSO. Blank → Entra auth stays off and the backend falls back to X-API-Key / X-User-Id. Not secret (these are public identifiers), so passed as plain env vars.')
 param entraTenantId string = ''
 param entraClientId string = ''
+
+@description('Application Insights connection string. Passed to backend and worker as APPLICATIONINSIGHTS_CONNECTION_STRING.')
+param appInsightsConnectionString string = ''
+
+@description('Storage account name for engagement exports (archive/flush lifecycle). Empty → blob export disabled.')
+param storageAccountName string = ''
 
 // ---------------------------------------------------------------------------
 // Role assignment IDs
@@ -102,6 +108,8 @@ var appEnv = [
   { name: 'CORS_ALLOW_ORIGINS', value: corsAllowOrigins }
   { name: 'ENTRA_TENANT_ID', value: entraTenantId }
   { name: 'ENTRA_CLIENT_ID', value: entraClientId }
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+  { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
 ]
 
 // ---------------------------------------------------------------------------
@@ -129,7 +137,10 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'backend'
           image: backendImage
-          resources: { cpu: json('0.5'), memory: '1Gi' }
+          // Run migrations before starting uvicorn. Alembic is idempotent —
+          // upgrade head is a no-op if the schema is already current.
+          command: [ 'sh', '-c', 'alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000' ]
+          resources: { cpu: json('1'), memory: '2Gi' }
           env: appEnv
           probes: [
             {
@@ -191,3 +202,4 @@ resource appKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 output appFqdn string = app.properties.configuration.ingress.fqdn
 output appName string = app.name
+output appPrincipalId string = app.identity.principalId

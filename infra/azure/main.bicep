@@ -1,15 +1,22 @@
 // Red Team Dashboard — Phase 0 Azure deploy (subscription-scoped).
 //
 // Creates a per-environment resource group and provisions:
+//   - VNet with two delegated subnets (Container Apps /23, Postgres /28)
+//   - Private DNS zone for Postgres VNet injection
 //   - Log Analytics workspace
+//   - Application Insights (workspace-based)
 //   - Azure Container Registry (Basic)
-//   - Azure Database for PostgreSQL Flexible Server (Burstable B1ms)
+//   - Azure Database for PostgreSQL Flexible Server — VNet-injected, no public access
 //   - Azure Cache for Redis (Basic C0)
 //   - Key Vault (RBAC mode) with seeded secrets
 //   - Container Apps Environment + 3 apps (backend, worker, frontend)
 //
 // First deploy: containers will fail until ACR images exist. See
 // `infra/azure/README.md` for the build+push+revision-roll sequence.
+//
+// Azure OpenAI: NOT provisioned here. If llmProvider=azure, create the AOAI
+// resource separately and populate the KV secrets (azure-openai-api-key,
+// azure-openai-endpoint, azure-openai-deployment) after the deploy.
 
 targetScope = 'subscription'
 
@@ -38,9 +45,9 @@ param workerImageTag string = 'placeholder'
 @description('Tag for frontend image in ACR.')
 param frontendImageTag string = 'placeholder'
 
-@description('LLM_PROVIDER env value injected into backend + worker.')
+@description('LLM_PROVIDER env value injected into backend + worker. Default is anthropic; set to azure only after provisioning an Azure OpenAI resource and populating KV secrets.')
 @allowed([ 'azure', 'anthropic', 'ollama' ])
-param llmProvider string = 'azure'
+param llmProvider string = 'anthropic'
 
 @description('ANTHROPIC_MODEL env value (used when LLM_PROVIDER=anthropic).')
 param anthropicModel string = 'claude-opus-4-7'
@@ -58,6 +65,41 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   tags: tags
 }
 
+// ---------------------------------------------------------------------------
+// Networking — VNet + private DNS zone for Postgres
+// ---------------------------------------------------------------------------
+
+module vnet 'modules/vnet.bicep' = {
+  name: 'vnet'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
+resource pgDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.postgres.database.azure.com'
+  location: 'global'
+  tags: tags
+  scope: rg
+}
+
+resource pgDnsVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: pgDnsZone
+  name: '${namePrefix}-pg-dns-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.outputs.vnetId }
+    registrationEnabled: false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
 module logs 'modules/loganalytics.bicep' = {
   name: 'logs'
   scope: rg
@@ -67,6 +109,21 @@ module logs 'modules/loganalytics.bicep' = {
     tags: tags
   }
 }
+
+module ai 'modules/appinsights.bicep' = {
+  name: 'appinsights'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    workspaceId: logs.outputs.workspaceId
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Data tier
+// ---------------------------------------------------------------------------
 
 module acr 'modules/acr.bicep' = {
   name: 'acr'
@@ -87,7 +144,10 @@ module postgres 'modules/postgres.bicep' = {
     tags: tags
     adminLogin: postgresAdminLogin
     adminPassword: postgresAdminPassword
+    delegatedSubnetId: vnet.outputs.postgresSubnetId
+    privateDnsZoneId: pgDnsZone.id
   }
+  dependsOn: [ pgDnsVnetLink ]
 }
 
 module redis 'modules/redis.bicep' = {
@@ -113,9 +173,10 @@ module kv 'modules/keyvault.bicep' = {
   }
 }
 
-// Image refs the container apps will pull. With a fresh ACR and no images
-// pushed yet, the apps will fail to start — push real images and re-run
-// the deploy (or `az containerapp update --image ...`).
+// ---------------------------------------------------------------------------
+// Compute tier
+// ---------------------------------------------------------------------------
+
 var backendImage = '${acr.outputs.loginServer}/rtd-backend:${backendImageTag}'
 var workerImage = '${acr.outputs.loginServer}/rtd-worker:${workerImageTag}'
 var frontendImage = '${acr.outputs.loginServer}/rtd-frontend:${frontendImageTag}'
@@ -129,6 +190,7 @@ module apps 'modules/containerapps.bicep' = {
     tags: tags
     logAnalyticsCustomerId: logs.outputs.customerId
     logAnalyticsPrimarySharedKey: logs.outputs.primarySharedKey
+    infrastructureSubnetId: vnet.outputs.containerAppsSubnetId
     acrLoginServer: acr.outputs.loginServer
     acrId: acr.outputs.id
     keyVaultName: kv.outputs.name
@@ -138,8 +200,13 @@ module apps 'modules/containerapps.bicep' = {
     frontendImage: frontendImage
     llmProvider: llmProvider
     anthropicModel: anthropicModel
+    appInsightsConnectionString: ai.outputs.connectionString
   }
 }
+
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
 
 output resourceGroupName string = rg.name
 output acrLoginServer string = acr.outputs.loginServer

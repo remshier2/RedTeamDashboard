@@ -38,7 +38,7 @@ resource kv 'Microsoft.KeyVault/vaults@2024-04-01-preview' = {
     sku: { family: 'A', name: 'standard' }
     enableRbacAuthorization: true
     enableSoftDelete: true
-    softDeleteRetentionInDays: 7
+    softDeleteRetentionInDays: 30
     publicNetworkAccess: 'Enabled'
   }
 }

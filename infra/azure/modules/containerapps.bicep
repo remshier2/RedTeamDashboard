@@ -1,7 +1,9 @@
 // Container Apps Environment + 3 apps (backend, worker, frontend).
 //
-// - Environment: Consumption-only (no VNet) for Phase 0 cost. Logs ship to
-//   the Log Analytics workspace.
+// - Environment: Consumption-profile, VNet-integrated. The /23 infrastructure
+//   subnet gives containers a stable egress address space so Postgres (VNet-
+//   injected, no public access) can accept connections from within the VNet.
+//   Logs ship to the Log Analytics workspace.
 // - backend:  external ingress on 8000 -> 443. Pulls from ACR via system
 //             identity; reads secrets from Key Vault via system identity.
 // - worker:   no ingress. Same image, different entrypoint. Scales 1-3
@@ -33,7 +35,13 @@ param workerImage string
 param frontendImage string
 
 param anthropicModel string = 'claude-opus-4-7'
-param llmProvider string = 'azure'
+param llmProvider string = 'anthropic'
+
+@description('Application Insights connection string. Passed to backend and worker as APPLICATIONINSIGHTS_CONNECTION_STRING.')
+param appInsightsConnectionString string = ''
+
+@description('Resource ID of the /23 subnet delegated to Microsoft.App/environments.')
+param infrastructureSubnetId string
 
 // ---------------------------------------------------------------------------
 // Managed environment
@@ -50,6 +58,10 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
         customerId: logAnalyticsCustomerId
         sharedKey: logAnalyticsPrimarySharedKey
       }
+    }
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: false
     }
     zoneRedundant: false
   }
@@ -110,6 +122,7 @@ var backendEnv = [
   { name: 'AZURE_OPENAI_ENDPOINT', secretRef: 'azure-openai-endpoint' }
   { name: 'AZURE_OPENAI_DEPLOYMENT', secretRef: 'azure-openai-deployment' }
   { name: 'AZURE_OPENAI_API_VERSION', value: '2024-08-01-preview' }
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
 ]
 
 // ---------------------------------------------------------------------------
@@ -140,7 +153,7 @@ resource backend 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'backend'
           image: backendImage
-          resources: { cpu: json('0.5'), memory: '1Gi' }
+          resources: { cpu: json('1'), memory: '2Gi' }
           env: backendEnv
           probes: [
             {

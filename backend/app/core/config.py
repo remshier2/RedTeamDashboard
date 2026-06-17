@@ -93,5 +93,10 @@ class Settings(BaseSettings):
     azure_openai_deployment: str = ""
     azure_openai_api_version: str = "2024-08-01-preview"
 
+    # Azure Blob Storage for engagement exports (archive / flush)
+    # Set AZURE_STORAGE_ACCOUNT_NAME to enable; unset → exports returned inline only.
+    azure_storage_account_name: str = ""
+    azure_storage_container_name: str = "engagement-exports"
+
 
 settings = Settings()

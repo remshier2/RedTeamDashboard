@@ -12,6 +12,8 @@ from app.api.events import router as events_router
 from app.api.reports import router as reports_router
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.mcp.auth import MCPAuthMiddleware
+from app.mcp.server import mcp
 
 configure_logging(settings.env)
 
@@ -34,6 +36,10 @@ app.include_router(authorizations_router)
 app.include_router(api_keys_router)
 app.include_router(events_router)
 app.include_router(reports_router)
+
+# MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
+# Agents connect via: claude mcp add rtd --transport sse --url https://<fqdn>/mcp/sse
+app.mount("/mcp", MCPAuthMiddleware(mcp.sse_app()))
 
 
 @app.get("/health")
