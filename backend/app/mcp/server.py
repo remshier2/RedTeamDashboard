@@ -22,7 +22,9 @@ same Postgres database. The viewer shows findings from both.
 """
 from __future__ import annotations
 
+import uuid
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -31,6 +33,8 @@ from sqlalchemy import select
 from app.mcp.auth import get_current_key, get_current_user
 from app.models import (
     ActorType,
+    Approval,
+    ApprovalStatus,
     AuditLog,
     Engagement,
     EngagementStatus,
@@ -217,8 +221,42 @@ def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> di
                 "scope_check": decision.scope.to_jsonable(),
             }
 
-        # For active tools (interrupt) we trust the model read the tool
-        # description and confirmed with the analyst before calling.
+        # Active/destructive tools require analyst confirmation per the MCP
+        # server instructions. By the time the model calls this tool it has
+        # already confirmed with the analyst in the conversation. Write an
+        # Approval row so the audit trail matches the LangGraph path.
+        if decision.action is Action.interrupt:
+            approval = Approval(
+                engagement_id=eng.id,
+                thread_id=f"mcp-{uuid.uuid4()}",
+                node="mcp_tool",
+                tool_name=tool_name,
+                tool_args=args,
+                risk=decision.risk,
+                scope_check=decision.scope.to_jsonable(),
+                status=ApprovalStatus.approved,
+                decided_by=user.id,
+                decided_at=datetime.now(tz=UTC),
+            )
+            session.add(approval)
+            session.flush()
+            session.add(
+                AuditLog(
+                    engagement_id=eng.id,
+                    actor_type=ActorType.user,
+                    actor_id=str(user.id),
+                    event_type="approval.decided",
+                    payload={
+                        "approval_id": str(approval.id),
+                        "thread_id": approval.thread_id,
+                        "tool": tool_name,
+                        "status": ApprovalStatus.approved.value,
+                        "approved": True,
+                        "via": "mcp",
+                    },
+                )
+            )
+
         result = run_tool(tool_name, args)
 
         payload = {
