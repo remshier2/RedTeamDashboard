@@ -69,6 +69,9 @@ from app.schemas.engagement import (
     RunModel,
     RunStart,
     RunStartResponse,
+    ScopeImportPreview,
+    ScopeImportRequest,
+    ScopeImportResult,
     ScopeItemCreate,
     ScopeItemRead,
     ScopeItemUpdate,
@@ -76,6 +79,7 @@ from app.schemas.engagement import (
 from app.schemas.finding import EntityRead, FindingRead, FindingValidate
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
+from app.services.scope_import import parse_scope_text
 
 router = APIRouter()
 
@@ -389,6 +393,135 @@ def create_scope_item(
     session.commit()
     session.refresh(item)
     return item
+
+
+@router.post(
+    "/scope/parse",
+    response_model=ScopeImportPreview,
+)
+def parse_scope_blob(
+    body: ScopeImportRequest, _user: CurrentUser
+) -> ScopeImportPreview:
+    """Pure parser — no engagement, no DB writes.
+
+    Lets the /new wizard preview an import before the engagement exists.
+    Same parser the /scope/import endpoint uses; results are interchangeable.
+    """
+    rows, errors = parse_scope_text(body.text)
+    return ScopeImportPreview(
+        preview=[
+            {
+                "line": r.line,
+                "value": r.value,
+                "kind": r.kind,
+                "is_exclusion": r.is_exclusion,
+            }
+            for r in rows
+        ],
+        errors=[
+            {"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors
+        ],
+        would_create=len(rows),
+    )
+
+
+@router.post(
+    "/engagements/{slug}/scope/import",
+    response_model=ScopeImportPreview | ScopeImportResult,
+)
+def import_scope(
+    slug: str,
+    body: ScopeImportRequest,
+    session: DbSession,
+    user: CurrentUser,
+    dry_run: bool = False,
+) -> ScopeImportPreview | ScopeImportResult:
+    """Bulk-import scope items from a free-form text blob.
+
+    Same parser whether the analyst uploaded a file (client read it as text)
+    or pasted into a textarea. ``?dry_run=true`` returns the preview without
+    persisting; the UI calls it on each debounced keystroke. The real commit
+    de-dupes against the engagement's existing (kind, value, is_exclusion)
+    tuples so re-running an import is safe.
+    """
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+    rows, errors = parse_scope_text(body.text)
+
+    error_rows = [
+        {"line": e.line, "raw": e.raw, "reason": e.reason} for e in errors
+    ]
+
+    if dry_run:
+        return ScopeImportPreview(
+            preview=[
+                {
+                    "line": r.line,
+                    "value": r.value,
+                    "kind": r.kind,
+                    "is_exclusion": r.is_exclusion,
+                }
+                for r in rows
+            ],
+            errors=error_rows,
+            would_create=len(rows),
+        )
+
+    existing = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    seen = {(s.kind, s.value, s.is_exclusion) for s in existing}
+
+    created: list[ScopeItem] = []
+    duplicates: list[dict[str, Any]] = []
+    for r in rows:
+        key = (r.kind, r.value, r.is_exclusion)
+        if key in seen:
+            duplicates.append(
+                {
+                    "line": r.line,
+                    "value": r.value,
+                    "kind": r.kind,
+                    "is_exclusion": r.is_exclusion,
+                }
+            )
+            continue
+        item = ScopeItem(
+            engagement_id=eng.id,
+            kind=r.kind,
+            value=r.value,
+            is_exclusion=r.is_exclusion,
+        )
+        session.add(item)
+        seen.add(key)
+        created.append(item)
+
+    session.flush()
+    if created:
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="scope.imported",
+                payload={
+                    "created_count": len(created),
+                    "error_count": len(errors),
+                    "duplicate_count": len(duplicates),
+                },
+            )
+        )
+    session.commit()
+    for c in created:
+        session.refresh(c)
+
+    return ScopeImportResult(
+        created=[ScopeItemRead.model_validate(c) for c in created],
+        errors=error_rows,
+        duplicates=duplicates,
+    )
 
 
 @router.get(

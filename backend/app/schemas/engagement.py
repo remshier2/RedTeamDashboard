@@ -76,6 +76,52 @@ class ScopeItemRead(BaseModel):
     updated_at: datetime
 
 
+class ScopeImportRequest(BaseModel):
+    """Bulk-import body: a free-form blob the parser turns into ScopeItems.
+
+    Whatever the analyst pasted/uploaded — .txt or .csv content, mixed kinds,
+    optional ``!`` exclusions, ``#`` comments — goes straight in here.
+    """
+
+    text: str = Field(min_length=1, max_length=200_000)
+
+
+class ScopeImportPreviewRow(BaseModel):
+    line: int
+    value: str
+    kind: ScopeKind
+    is_exclusion: bool
+
+
+class ScopeImportErrorRow(BaseModel):
+    line: int
+    raw: str
+    reason: str
+
+
+class ScopeImportDuplicateRow(BaseModel):
+    line: int
+    value: str
+    kind: ScopeKind
+    is_exclusion: bool
+
+
+class ScopeImportPreview(BaseModel):
+    """Shape returned by ``?dry_run=true`` — nothing persisted."""
+
+    preview: list[ScopeImportPreviewRow]
+    errors: list[ScopeImportErrorRow]
+    would_create: int
+
+
+class ScopeImportResult(BaseModel):
+    """Shape returned by the real commit."""
+
+    created: list[ScopeItemRead]
+    errors: list[ScopeImportErrorRow]
+    duplicates: list[ScopeImportDuplicateRow]
+
+
 class RunModel(BaseModel):
     """Per-run LLM choice — overrides the worker's env defaults."""
 

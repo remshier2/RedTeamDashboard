@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ScopeImporter } from "@/components/scope-importer";
 import { createEngagement, createScopeItem, startRun } from "@/lib/api";
 import type { LLMProvider, ScopeKind } from "@/lib/types";
 
@@ -174,6 +175,18 @@ export default function NewEngagementPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <ScopeImporter
+            onCommit={(_text, preview) => {
+              setScope((s) => [
+                ...s,
+                ...preview.preview.map((row) => ({
+                  kind: row.kind,
+                  value: row.value,
+                  isExclusion: row.is_exclusion,
+                })),
+              ]);
+            }}
+          />
           <div className="grid gap-3 sm:grid-cols-[7rem_1fr_auto] sm:items-end">
             <div className="space-y-2">
               <Label htmlFor="kind">Kind</Label>
