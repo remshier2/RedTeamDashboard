@@ -17,7 +17,7 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 
 **Branch:** `phase-11-costs` on fork `remshier2/RedTeamDashboard`  
 **Target:** `DonPercival0x45/RedTeamDashboard` `main`  
-**Status:** Phase 11 (Costs tab) ✅ Complete — pricing engine, cost rollup API, and frontend Costs view component fully implemented and tested.
+**Status:** Phase 11 (Costs tab) ✅ Complete. Analyst UX additions ✅ Complete (finding importer, JSON export, summary editor, screenshot attachments).
 
 ---
 
@@ -31,6 +31,7 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 | Phase 9 | ✅ Merged | Strategic + Tactical orchestrator agents, task queue, suggestions |
 | Phase 10 | 🔄 In Progress | Hybrid execution (import-first model) |
 | Phase 11 | ✅ Complete | Cost engine (LLM spend tracking, rollup, Costs tab) |
+| Analyst UX | ✅ Complete | Finding importer, JSON export, summary editor, screenshot attachments |
 
 ---
 
@@ -77,6 +78,71 @@ work conducted by analysts during authorized engagements, not unauthorized intru
 - Costs view wired into `frontend/app/e/page.tsx` `"costs"` tab
 - `getEngagementCosts(slug)` in `frontend/lib/api.ts`
 - `CostRollup`, `AgentCost`, `ModelCost` types in `frontend/lib/types.ts`
+
+---
+
+## Analyst UX Additions (✅ Complete — June 2026)
+
+### Finding importer
+
+**`frontend/components/finding-importer.tsx`** — CSV/JSON bulk import UI
+
+- CSV and JSON mode toggle; file upload or paste
+- Client-side parser with live preview (count, severity badges, skipped-row errors)
+- CSV handles quoted fields with commas; skips `#` comment lines
+- Submits to existing `POST /engagements/{slug}/findings/import`
+- All imports land as `pending_validation` — analyst reviews before report eligibility
+- Import toggle button added to the Findings tab filter row
+
+### JSON export
+
+**`GET /engagements/{slug}/export`** — Full engagement snapshot download
+
+- Thin endpoint wrapper over the existing `_build_export_payload()` helper
+- Returns findings, scope, observations, and audit summary as JSON
+- `downloadEngagementExport(slug)` in `frontend/lib/api.ts` triggers a browser download
+- "Export JSON" button added to the Report tab alongside the existing PDF button
+
+### Finding summary editor
+
+**`PATCH /findings/{finding_id}`** — Partial update endpoint
+
+- Updates `title`, `summary`, `severity`, `phase` — only fields explicitly provided change
+- Uses `model_fields_set` for true partial updates
+- Audit-logged as `finding.updated`
+- `summary` field added to `FindingRead` schema and `_finding_to_read()` serializer
+- Frontend: Textarea + Save button in the finding slide-over, pre-populated from DB
+- Summary is included in the PDF report via the existing template's `finding.summary` field
+
+### Screenshot / file attachments
+
+**`backend/app/models/attachment.py`** — New `Attachment` model
+
+- Stores raw bytes in Postgres `LargeBinary` (10 MB limit enforced at upload)
+- Fields: `id`, `finding_id`, `engagement_id`, `filename`, `content_type`, `size_bytes`, `data`, `created_by`
+- Cascade-deletes with the parent finding or engagement
+
+**`backend/alembic/versions/0009_attachments.py`** — Migration `0009`
+
+- Creates `attachments` table; indexes on `finding_id` and `engagement_id`
+- Alembic head is now `0009`
+
+**New endpoints in `backend/app/api/engagements.py`**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/findings/{id}/attachments` | Upload file (multipart, 10 MB limit), audit-logged |
+| `GET` | `/findings/{id}/attachments` | List metadata (no bytes) |
+| `GET` | `/attachments/{id}` | Serve raw bytes with original content-type |
+| `DELETE` | `/attachments/{id}` | Delete attachment, audit-logged |
+
+**Frontend**
+
+- `AttachmentThumb` component fetches images with auth headers → `URL.createObjectURL()` (revoked on unmount)
+- Delete button on hover
+- "Add screenshot" button opens hidden file input
+- Grid of thumbnails in the finding slide-over below the summary editor
+- `uploadAttachment`, `listAttachments`, `loadAttachmentBlob`, `deleteAttachment` in `frontend/lib/api.ts`
 
 ---
 
@@ -275,6 +341,34 @@ Added defensive framing headers to all public docs:
 ```
 
 These paths contain high trigger density but are rarely needed for development work.
+
+---
+
+---
+
+## UX Backlog (Captured June 2026)
+
+19 items logged in `.claude/projects/.../memory/ux-improvement-backlog.md`. High-level:
+
+1. Person entities with profile cards (name, role, email associations)
+2. Finding work log / activity drill-down ("what was tried against this finding")
+3. Recurring routines — scheduled tasks against entities (weekly scan, monthly Dehashed check)
+4. Artifact browser — raw output files (CSV, Nessus exports) linked to findings/tasks
+5. Narrative report wizard — section-based authoring, AI writing assistant, Word/PDF export
+6. Engagement scheduler — GitHub-style box calendar showing active engagement windows
+7. Per-role multi-model support (incl. GLM-5 / any OpenAI-compatible endpoint)
+8. MCP vs. legacy dispatch visibility — `dispatch_method` column in `agent_executions`
+9. Global search across all engagements
+10. Home dashboard / attention queue (pending approvals, unvalidated findings, overdue tasks)
+11. Finding templates — save and reuse common finding boilerplate
+12. CVSS scoring + adjusted severity with justification
+13. Remediation tracking — finding lifecycle after report delivery (re-test, closed, accepted risk)
+14. Cross-engagement pattern detection
+15. Finding-level comments / analyst discussion thread
+16. Analyst assignment (owner per finding/task, "my queue" filter)
+17. Persistent approval notifications in top nav (not just on the active engagement page)
+18. Free-form tagging on findings
+19. Analyst activity feed — human-readable "Joe did this · Ken did that" timeline per engagement
 
 ---
 

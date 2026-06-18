@@ -61,7 +61,7 @@ Forgetting `REDIS_URL` makes the Redis tests hang (resolving host `redis`).
 
 ## Conventions
 
-- **Alembic:** single linear chain, one head (currently `0008`). New migration =
+- **Alembic:** single linear chain, one head (currently `0009`). New migration =
   next number, `down_revision` = current head. Never branch the chain.
 - **Merge resolution:** conflicts in registration files (`app/main.py`,
   `models/__init__.py`, `frontend/lib/api.ts`, `frontend/lib/types.ts`) are almost
@@ -73,6 +73,12 @@ Phase 9 (orchestrator) is integrated. Phase 11 (Costs tab) is complete. Next:
 **Phase 10** (hybrid execution off the Phase-9 task queue). CHARTER Ideas 0–4
 (left-nav, findings-first, attack-path slide-over, Nessus-style setup, entities)
 are largely built.
+
+Recent additions on `phase-11-costs` (June 2026):
+- **Finding importer** — CSV/JSON bulk import via `POST /engagements/{slug}/findings/import`; frontend importer component with live parse preview.
+- **JSON export** — `GET /engagements/{slug}/export` wraps `_build_export_payload`; browser download from Report tab.
+- **Finding summary editor** — `PATCH /findings/{id}` updates title/summary/severity/phase; summary field added to `FindingRead` and the slide-over.
+- **Screenshot/file attachments** — `Attachment` model + migration `0009`; upload/list/serve/delete endpoints; auth-gated image thumbnails in the finding slide-over.
 
 ## Codebase Sanitization
 

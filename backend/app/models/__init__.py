@@ -9,6 +9,7 @@ from app.models.agent_execution import (
 )
 from app.models.api_key import APIKey, APIKeyScope, scope_satisfies
 from app.models.approval import Approval, ApprovalStatus, RiskLevel
+from app.models.attachment import Attachment
 from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
 from app.models.engagement import Engagement, EngagementStatus
@@ -30,6 +31,7 @@ __all__ = [
     "APIKeyScope",
     "ActorType",
     "AgentExecution",
+    "Attachment",
     "AgentExecutionStatus",
     "AgentName",
     "AgentTrigger",

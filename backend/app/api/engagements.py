@@ -25,6 +25,13 @@ Endpoints::
     DELETE /observations/{observation_id}                -> delete observation
 
     POST   /engagements/{slug}/findings/import           -> bulk import findings
+    PATCH  /findings/{finding_id}                        -> update title/summary/severity/phase
+    GET    /engagements/{slug}/export                    -> full JSON snapshot
+
+    POST   /findings/{finding_id}/attachments            -> upload screenshot/evidence file
+    GET    /findings/{finding_id}/attachments            -> list attachment metadata
+    GET    /attachments/{attachment_id}                  -> serve raw bytes
+    DELETE /attachments/{attachment_id}                  -> delete
 
     POST   /engagements/{slug}/runs                     -> enqueue run.start
 
@@ -39,7 +46,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
@@ -48,6 +55,7 @@ from app.core.blob import upload_engagement_export
 from app.core.config import settings
 from app.models import (
     ActorType,
+    Attachment,
     AuditLog,
     Engagement,
     EngagementStatus,
@@ -76,7 +84,7 @@ from app.schemas.engagement import (
     ScopeItemRead,
     ScopeItemUpdate,
 )
-from app.schemas.finding import EntityRead, FindingRead, FindingValidate
+from app.schemas.finding import AttachmentRead, EntityRead, FindingRead, FindingUpdate, FindingValidate
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
 from app.services.scope_import import parse_scope_text
@@ -215,6 +223,7 @@ def _finding_to_read(f: Finding) -> dict[str, Any]:
         "data": details,
         "severity": f.severity,
         "title": f.title,
+        "summary": f.summary,
         "phase": f.phase,
         "status": f.status,
         "validated_at": f.validated_at,
@@ -800,6 +809,201 @@ def import_findings(
     for f in created:
         session.refresh(f)
     return [_finding_to_read(f) for f in created]
+
+
+# ---------------------------------------------------------------------------
+# Finding update (title / summary / severity / phase)
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/findings/{finding_id}",
+    response_model=FindingRead,
+)
+def update_finding(
+    finding_id: uuid.UUID,
+    body: FindingUpdate,
+    session: DbSession,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    """Edit analyst-controlled fields on a finding. Only provided fields change;
+    omitted fields are left as-is. ``summary`` accepts ``null`` to clear it."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    changed: dict[str, Any] = {}
+    if "title" in body.model_fields_set and body.title is not None:
+        finding.title = body.title
+        changed["title"] = body.title
+    if "summary" in body.model_fields_set:
+        finding.summary = body.summary
+        changed["summary"] = body.summary
+    if "severity" in body.model_fields_set and body.severity is not None:
+        finding.severity = body.severity
+        changed["severity"] = body.severity.value
+    if "phase" in body.model_fields_set and body.phase is not None:
+        finding.phase = body.phase
+        changed["phase"] = body.phase.value
+
+    if changed:
+        session.add(
+            AuditLog(
+                engagement_id=finding.engagement_id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="finding.updated",
+                payload={"finding_id": str(finding.id), "changes": changed},
+            )
+        )
+        session.commit()
+        session.refresh(finding)
+
+    return _finding_to_read(finding)
+
+
+# ---------------------------------------------------------------------------
+# Engagement JSON export
+# ---------------------------------------------------------------------------
+
+
+@router.get("/engagements/{slug}/export")
+def export_engagement(
+    slug: str,
+    session: DbSession,
+    _user: CurrentUser,
+) -> dict[str, Any]:
+    """Full engagement snapshot as structured JSON — findings, scope, observations,
+    and audit summary. Suitable for archiving or importing into another instance."""
+    eng = _get_engagement_or_404(session, slug)
+    return _build_export_payload(session, eng)
+
+
+# ---------------------------------------------------------------------------
+# Finding attachments (screenshots / evidence files)
+# ---------------------------------------------------------------------------
+
+_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post(
+    "/findings/{finding_id}/attachments",
+    response_model=AttachmentRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_attachment(
+    finding_id: uuid.UUID,
+    file: Annotated[UploadFile, File()],
+    session: DbSession,
+    user: CurrentUser,
+) -> Attachment:
+    """Upload a screenshot or evidence file and attach it to the finding."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+
+    data = await file.read()
+    if len(data) > _MAX_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file too large — max {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB",
+        )
+
+    attachment = Attachment(
+        finding_id=finding_id,
+        engagement_id=finding.engagement_id,
+        filename=file.filename or "attachment",
+        content_type=file.content_type or "application/octet-stream",
+        size_bytes=len(data),
+        data=data,
+        created_by=str(user.id),
+    )
+    session.add(attachment)
+    session.add(
+        AuditLog(
+            engagement_id=finding.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="attachment.uploaded",
+            payload={
+                "finding_id": str(finding_id),
+                "filename": attachment.filename,
+                "size_bytes": attachment.size_bytes,
+            },
+        )
+    )
+    session.commit()
+    session.refresh(attachment)
+    return attachment
+
+
+@router.get(
+    "/findings/{finding_id}/attachments",
+    response_model=list[AttachmentRead],
+)
+def list_attachments(
+    finding_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> list[Attachment]:
+    """List attachment metadata for a finding (no raw bytes — fetch individually)."""
+    finding = session.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="finding not found")
+    return list(
+        session.execute(
+            select(Attachment)
+            .where(Attachment.finding_id == finding_id)
+            .order_by(Attachment.created_at)
+        ).scalars()
+    )
+
+
+@router.get("/attachments/{attachment_id}")
+def serve_attachment(
+    attachment_id: uuid.UUID,
+    session: DbSession,
+    _user: CurrentUser,
+) -> Response:
+    """Serve the raw bytes of an attachment with its original content-type."""
+    attachment = session.get(Attachment, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="attachment not found")
+    return Response(
+        content=attachment.data,
+        media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{attachment.filename}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@router.delete("/attachments/{attachment_id}")
+def delete_attachment(
+    attachment_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+) -> Response:
+    """Delete an attachment."""
+    attachment = session.get(Attachment, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="attachment not found")
+    session.add(
+        AuditLog(
+            engagement_id=attachment.engagement_id,
+            actor_type=ActorType.user,
+            actor_id=str(user.id),
+            event_type="attachment.deleted",
+            payload={
+                "attachment_id": str(attachment_id),
+                "filename": attachment.filename,
+            },
+        )
+    )
+    session.delete(attachment)
+    session.commit()
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------

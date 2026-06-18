@@ -107,9 +107,31 @@ export interface Finding {
   data: Record<string, unknown>;
   severity: Severity;
   title: string;
+  summary?: string | null;
   phase: FindingPhase;
   status: FindingValidationStatus;
   validated_at: string | null;
+  created_at: string;
+}
+
+// Payload for POST /engagements/{slug}/findings/import
+export interface FindingImport {
+  title: string;
+  severity?: Severity;
+  phase?: FindingPhase;
+  summary?: string;
+  target?: string;
+  source_tool?: string;
+  details?: Record<string, unknown>;
+}
+
+// Attachment metadata (raw bytes fetched separately via GET /attachments/{id})
+export interface Attachment {
+  id: string;
+  finding_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
   created_at: string;
 }
 
