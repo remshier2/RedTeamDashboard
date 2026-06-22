@@ -171,6 +171,92 @@ def test_strategic_writes_suggestions_and_execution(
         assert s.payload["tool"] in {"crt_sh", "dns_lookup"}
 
 
+def test_strategic_threads_engagement_creator_key_into_make_chat_model(
+    monkeypatch: pytest.MonkeyPatch,
+    db: Session,
+    engagement: Engagement,
+    finding: Finding,
+) -> None:
+    """Background Strategic uses the engagement creator's stored UserProviderKey,
+    not env. This is the second half of #147 (BYO wireup); the first half
+    (start_run → worker) was verified end-to-end via smoke test."""
+    from app.models import ProviderKeyKind, User, UserProviderKey
+    from app.services.secret_box import encrypt
+
+    creator = User(
+        email=f"creator-{uuid.uuid4().hex[:8]}@example.com",
+        display_name="creator",
+    )
+    db.add(creator)
+    db.commit()
+    db.refresh(creator)
+    db.add(
+        UserProviderKey(
+            user_id=creator.id,
+            kind=ProviderKeyKind.model_provider,
+            name="creator-anthropic",
+            provider="anthropic",
+            is_local=False,
+            models=["claude-opus-4-7"],
+            encrypted_key=encrypt("sk-ant-stored-9999"),
+            key_last4="9999",
+        )
+    )
+    engagement.created_by = creator.id
+    db.commit()
+
+    captured: dict[str, Any] = {}
+    fake = _FakeChatLLM(tasks=[])
+
+    def _stub_make_chat_model(
+        _provider: str, _name: str, **kw: Any
+    ) -> Any:
+        captured.update(kw)
+        return fake
+
+    monkeypatch.setattr(
+        "app.agents.strategic._make_chat_model", _stub_make_chat_model
+    )
+
+    agent = StrategicAgent(provider="anthropic", model_name="claude-opus-4-7")
+    execution, _ = agent.analyze_finding(
+        db, finding=finding, trigger=AgentTrigger.manual
+    )
+    db.commit()
+
+    assert captured.get("api_key") == "sk-ant-stored-9999"
+    assert execution.status.value == "completed"
+
+
+def test_strategic_records_failed_execution_when_creator_has_no_key(
+    db: Session, engagement: Engagement, finding: Finding
+) -> None:
+    """Engagement creator with no key for the chosen provider → execution
+    recorded as failed with the resolver's error message. Doesn't crash the
+    background consumer; analyst sees the failure in the Costs tab."""
+    from app.models import User
+
+    creator = User(
+        email=f"no-key-{uuid.uuid4().hex[:8]}@example.com",
+        display_name="no-key",
+    )
+    db.add(creator)
+    db.commit()
+    db.refresh(creator)
+    engagement.created_by = creator.id
+    db.commit()
+
+    agent = StrategicAgent(provider="anthropic", model_name="claude-opus-4-7")
+    execution, suggestions = agent.analyze_finding(
+        db, finding=finding, trigger=AgentTrigger.manual
+    )
+    db.commit()
+
+    assert execution.status.value == "failed"
+    assert "anthropic" in execution.error.lower()
+    assert suggestions == []
+
+
 def test_strategic_drops_exploit_proposals(
     db: Session, engagement: Engagement, finding: Finding
 ) -> None:
@@ -299,7 +385,7 @@ def test_analyze_endpoint_returns_suggestions(
         ]
     )
 
-    def _stub_make_chat_model(_provider: str, _name: str) -> Any:
+    def _stub_make_chat_model(_provider: str, _name: str, **_kw: Any) -> Any:
         return fake
 
     monkeypatch.setattr(
