@@ -146,7 +146,11 @@ class _CapturingFactory:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any] | None] = []
 
-    def __call__(self, model: Any) -> object:
+    def __call__(self, model: Any, allowed_tools: Any = None) -> object:
+        # Phase mcp-leases: the runner now passes an extra allowed_tools arg
+        # alongside the model dict. These tests don't exercise the lease
+        # path; we accept it for signature compatibility and ignore it.
+        del allowed_tools
         self.calls.append(dict(model) if model else None)
         return object()
 

@@ -397,17 +397,17 @@ def test_run_runner_requires_exactly_one_of_graph_or_factory() -> None:
     with pytest.raises(ValueError, match="exactly one"):
         RunRunner(
             graph=object(),
-            graph_factory=lambda _m: object(),
+            graph_factory=lambda _m, _a=None: object(),
             redis_client=None,  # type: ignore[arg-type]
             session_factory=SessionLocal,
         )
 
 
 def test_run_runner_calls_factory_with_envelope_model() -> None:
-    received: list[Any] = []
+    received: list[tuple[Any, Any]] = []
 
-    def factory(model: Any) -> Any:
-        received.append(model)
+    def factory(model: Any, allowed_tools: Any = None) -> Any:
+        received.append((model, allowed_tools))
         return object()
 
     runner = RunRunner(
@@ -423,12 +423,17 @@ def test_run_runner_calls_factory_with_envelope_model() -> None:
     # api_key + endpoint fields populated from the acting user's
     # UserProviderKey lookup. Without acting_user_id on the envelope (this
     # test) both are None.
+    # Phase mcp-leases: the runner now also resolves allowed_tools from
+    # the envelope's lease_token. No token here → None (full registry).
     assert received == [
-        {
-            "provider": "anthropic",
-            "name": "x",
-            "api_key": None,
-            "endpoint": None,
-        },
-        None,
+        (
+            {
+                "provider": "anthropic",
+                "name": "x",
+                "api_key": None,
+                "endpoint": None,
+            },
+            None,
+        ),
+        (None, None),
     ]

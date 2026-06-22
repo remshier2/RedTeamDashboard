@@ -105,7 +105,7 @@ def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
 SessionFactory = Callable[[], Session]
 
 
-GraphFactory = Callable[[Mapping[str, str] | None], Any]
+GraphFactory = Callable[[Mapping[str, str] | None, list[str] | None], Any]
 
 
 class RunRunner:
@@ -139,6 +139,11 @@ class RunRunner:
         thread the decrypted api_key + endpoint into the model mapping so
         ``graph_factory`` can pass them into ``make_llm``. NoProviderKeyError
         bubbles up to ``handle()`` which surfaces it as a ``run.errored``.
+
+        MCP lease path: when ``lease_token`` is on the envelope, look up
+        the lease and pass its ``allowed_tools`` to the factory so the
+        registry is filtered. Invalid/expired tokens raise so the run
+        terminally errors instead of silently running on the full surface.
         """
         if self._graph is not None:
             return self._graph
@@ -169,8 +174,34 @@ class RunRunner:
                     model["endpoint"] = resolved.endpoint
                 finally:
                     session.close()
+        allowed_tools = self._resolve_allowed_tools(envelope)
         assert self._graph_factory is not None  # noqa: S101 — invariant of __init__
-        return self._graph_factory(model)
+        return self._graph_factory(model, allowed_tools)
+
+    def _resolve_allowed_tools(
+        self, envelope: Mapping[str, Any]
+    ) -> list[str] | None:
+        """Read ``lease_token`` from envelope and return the lease's
+        ``allowed_tools`` list. Returns None when no lease token is present
+        (legacy path — full registry). Raises ValueError on invalid/expired
+        token so the caller maps it to a clean run.errored.
+        """
+        token = envelope.get("lease_token")
+        if not token:
+            return None
+        from app.services import mcp_lease as lease_svc
+
+        session = self._session_factory()
+        try:
+            lease = lease_svc.validate_token(session, str(token))
+            if lease is None:
+                raise ValueError(
+                    f"envelope carried lease_token {token!r} but it is "
+                    "invalid, released, or expired"
+                )
+            return list(lease.allowed_tools)
+        finally:
+            session.close()
 
     # ------------------------------------------------------------------
     # Public entry

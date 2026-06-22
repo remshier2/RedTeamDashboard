@@ -39,8 +39,11 @@ def main() -> None:
     checkpointer = build_postgres_checkpointer()
     authorizer = make_db_authorizer(SessionLocal)
 
-    def graph_factory(model: Mapping[str, Any] | None) -> object:
-        """Build a fresh graph per run with the requested LLM.
+    def graph_factory(
+        model: Mapping[str, Any] | None,
+        allowed_tools: list[str] | None = None,
+    ) -> object:
+        """Build a fresh graph per run with the requested LLM and tool surface.
 
         Cheap — StateGraph compile is sub-millisecond. The LLM constructor
         is what costs (network handshake on first invoke), and we'd pay
@@ -50,6 +53,12 @@ def main() -> None:
         runner's per-envelope lookup (acting user's ``UserProviderKey``).
         When omitted (e.g. tests with raw envelopes), ``make_llm`` falls
         back to the SDK's env-var auto-detection.
+
+        MCP leases: ``allowed_tools`` arrives from the runner's lease
+        lookup. When present, we filter the global tool registry down to
+        the lease's curated surface so the agent can only see — and only
+        bind — those tools. When None, the registry stays full (legacy /
+        manual runs without a lease).
         """
         if model and model.get("provider") and model.get("name"):
             llm = make_llm(
@@ -61,10 +70,22 @@ def main() -> None:
         else:
             provider, model_name = default_provider_model()
             llm = make_llm(provider, model_name)
+
+        registry = None
+        if allowed_tools is not None:
+            from app.orchestrator.tools import all_tools
+
+            registry = {
+                spec.name: spec
+                for spec in all_tools()
+                if spec.name in allowed_tools
+            }
+
         return build_graph(
             llm=llm,
             checkpointer=checkpointer,
             authorizer=authorizer,
+            registry=registry,
         )
 
     runner = RunRunner(
