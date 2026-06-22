@@ -83,7 +83,13 @@ from app.schemas.engagement import (
     ScopeItemRead,
     ScopeItemUpdate,
 )
-from app.schemas.finding import AttachmentRead, EntityRead, FindingRead, FindingUpdate, FindingValidate
+from app.schemas.finding import (
+    AttachmentRead,
+    EntityRead,
+    FindingRead,
+    FindingUpdate,
+    FindingValidate,
+)
 from app.schemas.observation import ObservationCreate, ObservationRead
 from app.services.entities import extract_entities
 from app.services.scope_import import parse_scope_text
@@ -867,7 +873,7 @@ def update_finding(
 
 
 @router.get("/engagements/{slug}/export")
-def export_engagement(
+def get_engagement_export(
     slug: str,
     session: DbSession,
     _user: CurrentUser,
