@@ -13,7 +13,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createScopeItem, deleteScopeItem, listScope } from "@/lib/api";
+import {
+  createScopeItem,
+  deleteScopeItem,
+  importScope,
+  listScope,
+} from "@/lib/api";
+import { ScopeImporter } from "@/components/scope-importer";
 import type { ScopeItem, ScopeKind } from "@/lib/types";
 
 const KINDS: ScopeKind[] = ["domain", "cidr", "ip", "url"];
@@ -89,6 +95,28 @@ export function ScopeEditor({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {canWrite && (
+          <ScopeImporter
+            onCommit={async (text) => {
+              const result = await importScope(slug, text);
+              await reload();
+              if (result.errors.length || result.duplicates.length) {
+                const bits = [
+                  `${result.created.length} added`,
+                  result.duplicates.length
+                    ? `${result.duplicates.length} duplicates skipped`
+                    : null,
+                  result.errors.length
+                    ? `${result.errors.length} unparseable`
+                    : null,
+                ].filter(Boolean);
+                setError(bits.join(" · "));
+              } else {
+                setError(null);
+              }
+            }}
+          />
+        )}
         {canWrite && (
         <form
           onSubmit={onAdd}

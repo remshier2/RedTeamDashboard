@@ -1,7 +1,22 @@
+<!--
+RedTeamDashboard — Defensive Security Operations and Governance Platform
+
+This documentation describes a platform for managing authorized security engagements.
+All work described is conducted with explicit approval and scope boundaries.
+
+Charter:
+- Agents perform enumeration and scanning only
+- Validation/proof-of-concept work is analyst-only
+- All actions are approval-gated and audit-logged
+
+Terminology Note: "exploit" in this context refers to validation/proof-of-concept
+work conducted by analysts during authorized engagements, not unauthorized intrusion.
+-->
+
 # Red Team Dashboard — Combined Architecture Sketch (v2)
 ## Single-tenant operations platform · agent orchestration · cost tracking
 
-**Status:** For review by both analysts.
+**Status:** Active reference document. Phase 7–9 complete; Phase 10–11 in progress.
 **Supersedes:** `AGENT_ORCHESTRATION_ARCHITECTURE_SKETCH.md` (v1) + the in-repo
 Phase 7+ plan. This document merges them into one target.
 
@@ -408,19 +423,32 @@ All §16 items resolved → cleared to build Phase 7.
 
 ---
 
-## 17. Build order (proposed)
+## 17. Build order (status as of 2026-06-18)
 
-- **Phase 7** — Identity + single-tenant pivot + dark monochrome shell + dashboard.
-- **Phase 8** — Tabbed engagement page; extend `findings` (`phase`, `status`,
-  validation fields); **validation queue**.
-- **Phase 9** — Orchestrator: Strategic watcher + Tactical manager + task queue
-  + workflow templates + analyst-choice scanning + actionable findings.
-- **Phase 10** — Hybrid ingest (nmap/Nessus/recon import) + ephemeral executor
-  (pluggable) + ephemeral-request flow.
-- **Phase 11** — Cost engine (infra + LLM + labor, estimate/actual/variance) +
-  Results→PDF polish.
+| Phase | Description | Status |
+|---|---|---|
+| **Phase 7** | Identity + single-tenant pivot + dark monochrome shell + dashboard | ✅ Completed |
+| **Phase 8** | Tabbed engagement page; extend `findings` (`phase`, `status`, validation fields); **validation queue** | ✅ Completed |
+| **Phase 9** | Orchestrator: Strategic watcher + Tactical manager + task queue + workflow templates + analyst-choice scanning + actionable findings | ✅ Completed |
+| **Phase 10** | Hybrid ingest (nmap/Nessus/recon import) + ephemeral executor (pluggable) + ephemeral-request flow | 🔄 In Progress |
+| **Phase 11** | Cost engine (LLM spend tracking, rollup, Costs tab UI) + Results→PDF polish | 🔄 In Progress |
+
+**Completed highlights:**
+- Phase 7: Single-tenant deployment, Entra SSO per-analyst, dark monochrome UI
+- Phase 8: Findings validation workflow (pending → validated), observations system, findings bulk import
+- Phase 9: Strategic agent (watcher/suggester), Tactical agent (dispatcher), task queue, suggestions, agent executions tracking
+
+**In progress:**
+- Phase 10: Hybrid execution path (import-first model), ephemeral executor backend
+- Phase 11: Cost rollup API (`GET /engagements/{slug}/costs`), pricing engine (`pricing.py`), Costs tab frontend component
+
+**Next steps:**
+- Labor time logging per phase (manual entry)
+- Cost variance tracking (estimate vs actual)
+- Azure Cost Management reconciliation (async)
+- Ephemeral attack-box flow (Kali VM provisioning)
 
 ---
 
-**Created:** 2026-06-16 · **For:** joint review (both analysts) · **Status:**
-§16 resolved — cleared to build Phase 7.
+**Created:** 2026-06-16 · **Updated:** 2026-06-18 · **For:** joint reference  
+**Status:** Phases 7–9 complete; Phases 10–11 in progress; §16 decisions remain valid.

@@ -58,7 +58,7 @@ from app.orchestrator.tools.runtime import run_tool
 # ---------------------------------------------------------------------------
 
 INSTRUCTIONS = """
-You are assisting red team analysts using the Red Team Dashboard (RTD).
+You are assisting security engagement analysts using the Red Team Dashboard (RTD).
 You have access to OSINT recon tools, engagement data, and findings storage.
 
 CORE RULES — always follow these without exception:
@@ -90,7 +90,7 @@ CORE RULES — always follow these without exception:
      info → informational (DNS records, certificates, open ports with known
              benign services)
      low  → minor exposure (non-critical services, informational leaks)
-     medium → moderate risk (potentially exploitable if combined)
+     medium → moderate risk (potentially actionable if combined)
      high → significant risk (exposed admin interfaces, weak configs)
      critical → immediate risk (unauthenticated RCE, credential exposure)
 
@@ -999,8 +999,46 @@ Once confirmed, follow this sequence:
 
 
 @mcp.prompt()
+def strategic_planning(engagement_slug: str, finding_id: str) -> str:
+    """Strategic watcher planning prompt for a single finding.
+
+    Use this when you want your own LLM (Claude Code, Cursor, etc.) to play
+    the Strategic role. The prompt loads the same rules the backend's
+    in-process Strategic uses, so behavior is consistent across both paths.
+    """
+    from app.agents.strategic import STRATEGIC_SYSTEM_PROMPT
+
+    return f"""{STRATEGIC_SYSTEM_PROMPT}
+
+You are acting as Strategic for engagement '{engagement_slug}', finding
+{finding_id}. Follow this sequence:
+
+1. Call get_finding_context('{engagement_slug}', '{finding_id}') — read the
+   finding, the engagement scope, and the registered OSINT tool list.
+2. Call list_open_suggestions('{engagement_slug}', '{finding_id}') — see what
+   is already on the board so you don't duplicate work.
+3. Decide on 0–N concrete next-step tasks. Each MUST be scan or enum, MUST
+   use a registered tool, and MUST target something inside scope.
+4. For each task, call propose_strategic_suggestion(...) with:
+     - engagement_slug, finding_id
+     - title (1 line)
+     - body (the rationale shown to the analyst)
+     - task_kind ('scan' or 'enum' — NEVER propose validation/proof-of-concept tasks)
+     - tool (registered name)
+     - target
+     - owner_eligibility ('agent' for safe-to-autodispatch, 'analyst' for
+       manual-only, 'either' when the analyst should choose)
+5. Summarize what you proposed and stop. The analyst reviews and decides;
+   nothing dispatches without their accept.
+
+If the finding does not suggest a useful next step right now, skip step 4
+entirely. Empty is a valid answer.
+"""
+
+
+@mcp.prompt()
 def deep_dive(engagement_slug: str, finding_id: str) -> str:
-    """Drill into a specific finding to assess exploitability and impact."""
+    """Drill into a specific finding to assess validation potential and impact."""
     return f"""
 Investigate finding {finding_id} from engagement '{engagement_slug}'.
 
@@ -1011,7 +1049,7 @@ Steps:
 3. Based on the finding's target, tool source, and details, determine:
    - What is the actual risk? (Confirm the finding is real, not a false positive.)
    - What additional passive evidence would support or refute the severity?
-   - What active follow-up (if any) would confirm exploitability?
+   - What active follow-up (if any) would validate the finding?
 4. Run any passive tools that help (no active tools without confirmation).
 5. Summarize your assessment:
    - Confirmed / false positive / needs more investigation
@@ -1186,3 +1224,323 @@ def flush_engagement_data(engagement_slug: str, confirmed: bool = False) -> dict
                 else "no blob storage configured"
             ),
         }
+
+
+# ---------------------------------------------------------------------------
+# Strategic-as-MCP — analyst's own agent plays the Strategic role
+# ---------------------------------------------------------------------------
+#
+# Hybrid model: the in-process StrategicAgent (app/agents/strategic.py) is
+# still wired to the slide-over Agent button + the worker subscriber. These
+# tools mirror that surface so an analyst who connects their own LLM via MCP
+# (Claude Code, Cursor, etc.) can plan with their OWN API key against the
+# same Suggestion table. CHARTER invariants are enforced server-side —
+# task_kind='exploit' is hard-refused; unknown tool names are refused.
+
+
+@mcp.tool()
+def get_finding_context(engagement_slug: str, finding_id: str) -> dict:
+    """Read a finding plus the engagement scope and OSINT tool registry — the
+    full context Strategic plans over.
+
+    Use this when acting as the Strategic watcher: read the returned context,
+    decide on next-step scan/enum tasks, then call ``propose_strategic_suggestion``
+    once per proposed task. Read-only. Viewer scope is sufficient.
+
+    Returns a dict shaped: {engagement, finding, scope, tools, charter_rules}.
+    """
+    from app.models import Finding as _Finding
+
+    with _session() as session:
+        try:
+            eng = _resolve_engagement(session, engagement_slug)
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        try:
+            fid = uuid.UUID(finding_id)
+        except ValueError:
+            return {"error": f"invalid finding_id {finding_id!r} — must be a UUID"}
+
+        finding = session.get(_Finding, fid)
+        if finding is None or finding.engagement_id != eng.id:
+            return {"error": f"finding {finding_id} not found in {engagement_slug}"}
+
+        scope_items = list(
+            session.execute(
+                select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+            ).scalars()
+        )
+
+        from app.orchestrator.tools import all_tools
+
+        tools_view = [
+            {
+                "name": spec.name,
+                "risk": spec.risk.value,
+                "target_arg": spec.target_arg,
+                "kind": spec.kind.value,
+                "description": spec.description,
+            }
+            for spec in all_tools()
+        ]
+
+        return {
+            "engagement": {
+                "slug": eng.slug,
+                "name": eng.name,
+                "description": eng.description,
+                "status": eng.status.value if hasattr(eng.status, "value") else str(eng.status),
+            },
+            "finding": {
+                "id": str(finding.id),
+                "title": finding.title,
+                "severity": finding.severity.value,
+                "phase": finding.phase.value,
+                "status": finding.status.value,
+                "source_tool": finding.source_tool,
+                "target": finding.target,
+                "details": finding.details,
+            },
+            "scope": {
+                "include": [
+                    {"kind": s.kind.value, "value": s.value, "note": s.note}
+                    for s in scope_items
+                    if not s.is_exclusion
+                ],
+                "exclude": [
+                    {"kind": s.kind.value, "value": s.value, "note": s.note}
+                    for s in scope_items
+                    if s.is_exclusion
+                ],
+            },
+            "tools": tools_view,
+            "charter_rules": [
+                "Agents scan, analysts exploit. Never propose exploit-kind tasks.",
+                "Only propose tools from the provided registry.",
+                "Targets MUST be inside the engagement's scope.",
+                "Each proposed task is one concrete next step (one tool + one target).",
+                "An empty proposal list is a valid answer.",
+            ],
+        }
+
+
+@mcp.tool()
+def propose_strategic_suggestion(
+    engagement_slug: str,
+    finding_id: str,
+    title: str,
+    body: str,
+    task_kind: str,
+    tool: str,
+    target: str,
+    owner_eligibility: str = "either",
+) -> dict:
+    """Write a Strategic suggestion (next-step task proposal) for analyst review.
+
+    Use this when acting as the Strategic watcher via MCP. The analyst sees
+    the suggestion in the findings slide-over and can accept (mints a Task +
+    auto-dispatches when agent-eligible scan/enum) or dismiss it.
+
+    HARD-ENFORCED rules:
+      - ``task_kind`` must be 'scan' or 'enum'. 'exploit' is rejected
+        server-side — agents never propose exploitation (CHARTER invariant).
+      - ``tool`` must be a name from the registered OSINT tool registry.
+      - ``owner_eligibility`` must be 'agent', 'analyst', or 'either'.
+
+    Requires cli scope. Records an ``agent_executions`` row tagged
+    ``model_provider='mcp:external'`` so the Costs tab can distinguish
+    analyst-brought agents from the backend's default Strategic LLM.
+    """
+    from app.agents.strategic import _AGENT_TASK_KINDS  # noqa: PLC0415
+    from app.models import (  # noqa: PLC0415
+        AgentExecution,
+        AgentExecutionStatus,
+        AgentName,
+        AgentTrigger,
+        OwnerEligibility,
+        Suggestion,
+        SuggestionKind,
+        SuggestionStatus,
+        TaskKind,
+    )
+    from app.models import (
+        Finding as _Finding,
+    )
+    from app.orchestrator.tools import get_tool  # noqa: PLC0415
+
+    key = get_current_key()
+    user = get_current_user()
+    if not scope_satisfies(key.scope, APIKeyScope.cli):
+        return {"error": "requires cli scope to propose suggestions"}
+
+    try:
+        kind_enum = TaskKind(task_kind)
+    except ValueError:
+        return {
+            "error": (
+                f"invalid task_kind {task_kind!r} — must be one of "
+                "scan/enum/exploit"
+            )
+        }
+    if kind_enum not in _AGENT_TASK_KINDS:
+        return {
+            "error": (
+                "agents scan, analysts exploit — task_kind='exploit' is "
+                "refused. Propose a scan or enum task instead."
+            )
+        }
+
+    try:
+        owner_enum = OwnerEligibility(owner_eligibility)
+    except ValueError:
+        return {
+            "error": (
+                f"invalid owner_eligibility {owner_eligibility!r} — must be "
+                "one of agent/analyst/either"
+            )
+        }
+
+    if get_tool(tool) is None:
+        return {
+            "error": (
+                f"unknown tool {tool!r} — call get_finding_context first to "
+                "see the registered tool list."
+            )
+        }
+
+    try:
+        fid = uuid.UUID(finding_id)
+    except ValueError:
+        return {"error": f"invalid finding_id {finding_id!r}"}
+
+    with _session() as session:
+        try:
+            eng = _resolve_engagement(session, engagement_slug)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        if eng.status is not EngagementStatus.active:
+            return {
+                "error": (
+                    f"engagement is {eng.status.value}; only active engagements"
+                    " accept new suggestions"
+                )
+            }
+
+        finding = session.get(_Finding, fid)
+        if finding is None or finding.engagement_id != eng.id:
+            return {"error": f"finding {finding_id} not found in {engagement_slug}"}
+
+        now = datetime.now(tz=UTC)
+        execution = AgentExecution(
+            engagement_id=eng.id,
+            agent=AgentName.strategic,
+            trigger=AgentTrigger.manual,
+            input={
+                "via": "mcp",
+                "finding_id": str(finding.id),
+                "engagement_slug": eng.slug,
+                "actor_key_id": str(key.id),
+            },
+            model_provider="mcp:external",
+            model_name=None,
+            status=AgentExecutionStatus.running,
+            started_at=now,
+        )
+        session.add(execution)
+        session.flush()
+
+        suggestion = Suggestion(
+            engagement_id=eng.id,
+            finding_id=finding.id,
+            title=title,
+            body=body or None,
+            kind=SuggestionKind.task,
+            payload={
+                "tool": tool,
+                "target": target,
+                "task_kind": kind_enum.value,
+                "owner_eligibility": owner_enum.value,
+            },
+            status=SuggestionStatus.open,
+            created_by_agent=AgentName.strategic,
+        )
+        session.add(suggestion)
+        session.flush()
+
+        execution.output = {"suggestion_id": str(suggestion.id)}
+        execution.status = AgentExecutionStatus.completed
+        execution.completed_at = datetime.now(tz=UTC)
+
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.agent,
+                actor_id=str(user.id),
+                event_type="mcp.strategic.proposed",
+                payload={
+                    "suggestion_id": str(suggestion.id),
+                    "execution_id": str(execution.id),
+                    "task_kind": kind_enum.value,
+                    "tool": tool,
+                    "target": target,
+                },
+            )
+        )
+        session.commit()
+        session.refresh(suggestion)
+
+        return {
+            "suggestion_id": str(suggestion.id),
+            "execution_id": str(execution.id),
+            "status": suggestion.status.value,
+            "title": suggestion.title,
+            "task_kind": kind_enum.value,
+            "tool": tool,
+            "target": target,
+            "owner_eligibility": owner_enum.value,
+        }
+
+
+@mcp.tool()
+def list_open_suggestions(
+    engagement_slug: str, finding_id: str | None = None
+) -> list[dict]:
+    """List open Strategic suggestions for an engagement.
+
+    Call before proposing more suggestions to avoid duplicates. Optionally
+    filter to a single finding. Read-only.
+    """
+    from app.models import Suggestion, SuggestionStatus  # noqa: PLC0415
+
+    with _session() as session:
+        try:
+            eng = _resolve_engagement(session, engagement_slug)
+        except ValueError as exc:
+            return [{"error": str(exc)}]
+
+        stmt = (
+            select(Suggestion)
+            .where(Suggestion.engagement_id == eng.id)
+            .where(Suggestion.status == SuggestionStatus.open)
+            .order_by(Suggestion.created_at.desc())
+        )
+        if finding_id is not None:
+            try:
+                stmt = stmt.where(Suggestion.finding_id == uuid.UUID(finding_id))
+            except ValueError:
+                return [{"error": f"invalid finding_id {finding_id!r}"}]
+
+        rows = list(session.execute(stmt).scalars())
+        return [
+            {
+                "id": str(s.id),
+                "finding_id": str(s.finding_id) if s.finding_id else None,
+                "title": s.title,
+                "body": s.body,
+                "payload": s.payload,
+                "created_by_agent": s.created_by_agent.value,
+                "created_at": str(s.created_at),
+            }
+            for s in rows
+        ]

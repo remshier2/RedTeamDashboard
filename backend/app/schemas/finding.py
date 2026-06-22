@@ -26,10 +26,20 @@ class FindingRead(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     severity: Severity
     title: str
+    summary: str | None = None
     phase: FindingPhase
     status: FindingStatus
     validated_at: datetime | None = None
     created_at: datetime
+
+
+class FindingUpdate(BaseModel):
+    """Editable fields on a persisted finding. Only set fields are applied."""
+
+    title: str | None = None
+    summary: str | None = None
+    severity: Severity | None = None
+    phase: FindingPhase | None = None
 
 
 class FindingValidate(BaseModel):
@@ -37,6 +47,17 @@ class FindingValidate(BaseModel):
     # report while keeping an audit trail.
     decision: FindingStatus = FindingStatus.validated
     reason: str | None = None
+
+
+class AttachmentRead(BaseModel):
+    """Metadata for a finding attachment. Raw bytes served via GET /attachments/{id}."""
+
+    id: UUID
+    finding_id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
 
 
 class EntityFindingRef(BaseModel):

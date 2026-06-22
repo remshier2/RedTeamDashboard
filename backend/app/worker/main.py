@@ -15,6 +15,7 @@ from collections.abc import Mapping
 import redis as redis_lib
 import structlog
 
+from app.agents import StrategicAgent
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal
@@ -24,6 +25,7 @@ from app.worker.authz import make_db_authorizer
 from app.worker.checkpoint import build_postgres_checkpointer
 from app.worker.consumer import StreamConsumer
 from app.worker.runner import RunRunner
+from app.worker.strategic_consumer import StrategicConsumer
 
 log = structlog.get_logger()
 
@@ -74,7 +76,24 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    # Phase 9: Strategic watcher subscribes to the outbound event stream and
+    # runs on every finding.created. Lives in a sibling thread so the
+    # existing run-command consumer in the main thread is untouched.
+    strategic = StrategicConsumer(
+        agent=StrategicAgent(),
+        redis_client=redis_client,
+        session_factory=SessionLocal,
+    )
+    strategic_thread = threading.Thread(
+        target=strategic.run_forever,
+        args=(stop_event,),
+        name="strategic-watcher",
+        daemon=True,
+    )
+    strategic_thread.start()
+
     consumer.run_forever(stop_event)
+    strategic_thread.join(timeout=5.0)
     sys.exit(0)
 
 

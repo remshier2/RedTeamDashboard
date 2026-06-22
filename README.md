@@ -1,18 +1,23 @@
 # Red Team Dashboard
 
-Multi-engagement red team operations dashboard. Each phase of an engagement
+Multi-engagement red team operations dashboard with orchestrator agents,
+cost tracking, and governance controls. Each phase of an engagement
 (OSINT → Scan → Verify → Exploit → PrivEsc → Persistence → Cleanup → Report)
 runs as its own LangGraph ReAct agent. Operator approves active/destructive
 tool calls in the UI.
 
 ## Status
 
-Greenfield. **Phase 0 MVP** = passive OSINT vertical slice (auth →
-engagement/scope CRUD → OSINT agent → findings table → SSE feed →
-approvals modal → flush → PDF report).
+**Active development.** Phases 7–9 complete; Phases 10–11 in progress.
 
-Architecture and phase roadmap live in `docs/architecture.md` (mirror of the
-approved plan).
+- ✅ **Phase 7**: Single-tenant pivot, Entra SSO, dark monochrome UI
+- ✅ **Phase 8**: Findings validation, observations system, findings bulk import
+- ✅ **Phase 9**: Strategic + Tactical orchestrator agents, task queue, suggestions
+- 🔄 **Phase 10**: Hybrid execution (import-first model), ephemeral executor
+- 🔄 **Phase 11**: Cost engine (LLM spend tracking, rollup, Costs tab)
+
+Architecture and phase roadmap live in `docs/ARCHITECTURE_SKETCH_V2.md` and
+`docs/CHARTER.md`.
 
 ## Stack
 
@@ -21,17 +26,18 @@ approved plan).
 - Data: PostgreSQL (source of truth, LangGraph checkpointer) + Redis
   (Streams jobs, pub/sub events)
 - Streaming: SSE
-- Hosting: AKS in prod, docker-compose locally
-- LLMs: Claude Opus 4.7 (orchestrator), Claude Sonnet 4.6 (phase workers)
-- Auth: Entra ID OIDC
+- Hosting: Azure Container Apps (prod), docker-compose (local)
+- LLMs: Anthropic Claude (orchestrator + workers), OpenAI (optional)
+- Auth: Entra ID OIDC (per-analyst SSO) or API key (CLI)
 
 ## Layout
 
 ```
-backend/    FastAPI app + LangGraph worker
+backend/    FastAPI app + LangGraph worker + orchestrator agents
 frontend/   Next.js App Router
+cli/        `rtd` CLI tool
 infra/      docker-compose.yml + azure/ Bicep
-docs/       architecture.md
+docs/       architecture, charter, deployment docs
 ```
 
 ## Local dev

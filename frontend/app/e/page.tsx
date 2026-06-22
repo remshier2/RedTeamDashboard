@@ -23,16 +23,66 @@ import {
 import { EntitiesView } from "@/components/entities-view";
 import { FindingsView } from "@/components/findings-view";
 import { ObservationsView } from "@/components/observations-view";
+import { CostsView } from "@/components/costs-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
-import { archiveEngagement, getEngagement, listFindings } from "@/lib/api";
+import { archiveEngagement, downloadEngagementExport, getEngagement, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
 import type { Engagement, Finding } from "@/lib/types";
 
 // Slug + active view ride in the query string (?slug=&view=) so the page can be
 // statically exported for Azure SWA (no dynamic route segments). The engagement
 // opens on Findings — the work product is front and center (see CHARTER).
+
+function ReportView({ slug }: { slug: string }) {
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const onExportJSON = async () => {
+    setExportBusy(true);
+    setExportError(null);
+    try {
+      await downloadEngagementExport(slug);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle>Report</CardTitle>
+        <div className="flex gap-2">
+          <div className="flex flex-col items-end gap-1">
+            <button
+              type="button"
+              onClick={onExportJSON}
+              disabled={exportBusy}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs hover:bg-secondary disabled:opacity-50"
+            >
+              {exportBusy ? "Exporting…" : "Export JSON"}
+            </button>
+            {exportError && (
+              <p className="text-xs text-destructive">{exportError}</p>
+            )}
+          </div>
+          <DownloadReport slug={slug} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <p className="text-xs text-muted-foreground/70">
+          <span className="text-critical">●</span> PDF includes the engagement&apos;s{" "}
+          <strong>validated</strong> findings across every phase — including any
+          summaries written in finding detail panels. JSON export includes the
+          full snapshot (findings, scope, observations, audit summary).
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
 
 const VALID_VIEWS = new Set<EngagementView>([
   "findings",
@@ -42,21 +92,6 @@ const VALID_VIEWS = new Set<EngagementView>([
   "costs",
   "scope",
 ]);
-
-function PlaceholderPanel({ title, roadmap }: { title: string; roadmap: string }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-xs text-muted-foreground/70">
-          <span className="text-critical">●</span> {roadmap}
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
 
 function EngagementDetail({ slug }: { slug: string }) {
   const router = useRouter();
@@ -251,7 +286,7 @@ function EngagementDetail({ slug }: { slug: string }) {
 
         <div className="min-w-0 flex-1">
           {view === "findings" && (
-            <FindingsView findings={findings} onUpdated={upsertFinding} />
+            <FindingsView slug={slug} findings={findings} onUpdated={upsertFinding} />
           )}
 
           {view === "entities" && <EntitiesView slug={slug} />}
@@ -259,27 +294,10 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "observations" && <ObservationsView slug={slug} />}
 
           {view === "report" && (
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0">
-                <CardTitle>Report</CardTitle>
-                <DownloadReport slug={slug} />
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground/70">
-                  <span className="text-critical">●</span> Generates a PDF from
-                  the engagement&apos;s <strong>validated</strong> findings
-                  across every phase.
-                </p>
-              </CardContent>
-            </Card>
+            <ReportView slug={slug} />
           )}
 
-          {view === "costs" && (
-            <PlaceholderPanel
-              title="Costs"
-              roadmap="Phase 11 — internal effort tracking: LLM spend + analyst labor (manual time logging) + infra, with a per-engagement rollup."
-            />
-          )}
+          {view === "costs" && <CostsView slug={slug} />}
 
           {view === "scope" && (
             <div className="space-y-6">

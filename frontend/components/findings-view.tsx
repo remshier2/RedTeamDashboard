@@ -1,16 +1,30 @@
 "use client";
 
-import { useState } from "react";
-import { X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { validateFinding } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  acceptSuggestion,
+  analyzeFinding,
+  deleteAttachment,
+  dismissSuggestion,
+  listAttachments,
+  loadAttachmentBlob,
+  updateFinding,
+  uploadAttachment,
+  validateFinding,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { FindingImporter } from "@/components/finding-importer";
 import type {
+  Attachment,
   Finding,
   FindingPhase,
   FindingValidationStatus,
   Severity,
+  Suggestion,
 } from "@/lib/types";
 
 // ── display helpers ────────────────────────────────────────────────────────
@@ -68,15 +82,18 @@ function shortId(id: string): string {
 // ── component ────────────────────────────────────────────────────────────
 
 export function FindingsView({
+  slug,
   findings,
   onUpdated,
 }: {
+  slug: string;
   findings: Finding[];
   onUpdated: (finding: Finding) => void;
 }) {
   const [phase, setPhase] = useState<FindingPhase | "all">("all");
   const [status, setStatus] = useState<FindingValidationStatus | "all">("all");
   const [selected, setSelected] = useState<Finding | null>(null);
+  const [showImporter, setShowImporter] = useState(false);
 
   const counts = {
     critical: findings.filter((f) => f.severity === "critical").length,
@@ -107,7 +124,7 @@ export function FindingsView({
         <MetricCard label="Pending validation" value={counts.pending} />
       </div>
 
-      {/* Filters */}
+      {/* Filters + import toggle */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <FilterRow
           options={PHASE_FILTERS}
@@ -123,7 +140,27 @@ export function FindingsView({
             v === "all" ? "All status" : STATUS_LABEL[v as FindingValidationStatus]
           }
         />
+        <Button
+          size="sm"
+          variant="outline"
+          className="ml-auto"
+          onClick={() => setShowImporter((v) => !v)}
+        >
+          <Upload className="mr-1.5 h-3.5 w-3.5" />
+          {showImporter ? "Close import" : "Import"}
+        </Button>
       </div>
+
+      {/* Inline importer panel */}
+      {showImporter && (
+        <FindingImporter
+          slug={slug}
+          onImported={(newFindings) => {
+            newFindings.forEach((f) => onUpdated(f));
+            setShowImporter(false);
+          }}
+        />
+      )}
 
       {/* Table */}
       {visible.length === 0 ? (
@@ -257,6 +294,64 @@ function FilterRow<T extends string>({
 
 // ── slide-over: finding detail + validation + attack-path placeholder ──────
 
+// ── Attachment thumbnail (fetches binary with auth, revokes URL on unmount) ──
+
+function AttachmentThumb({
+  attachment,
+  onDelete,
+}: {
+  attachment: Attachment;
+  onDelete: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!attachment.content_type.startsWith("image/")) return;
+    let objectUrl: string | null = null;
+    loadAttachmentBlob(attachment.id)
+      .then((url) => { objectUrl = url; setSrc(url); })
+      .catch(() => setSrc(null));
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [attachment.id, attachment.content_type]);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await deleteAttachment(attachment.id);
+      onDelete();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="group relative overflow-hidden rounded border border-border bg-background">
+      {src ? (
+        <img src={src} alt={attachment.filename} className="h-24 w-full object-cover" />
+      ) : (
+        <div className="flex h-24 items-center justify-center p-2 text-center font-mono text-[10px] text-muted-foreground">
+          {attachment.filename}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={deleting}
+        className="absolute right-1 top-1 rounded bg-black/60 p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+        aria-label="Delete attachment"
+      >
+        <X className="h-3 w-3 text-white" />
+      </button>
+      <p className="truncate px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        {attachment.filename}
+      </p>
+    </div>
+  );
+}
+
+// ── slide-over ───────────────────────────────────────────────────────────────
+
 function FindingSlideOver({
   finding,
   onClose,
@@ -268,6 +363,62 @@ function FindingSlideOver({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [dispatchedIds, setDispatchedIds] = useState<Set<string>>(new Set());
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+
+  // Summary editor
+  const [summary, setSummary] = useState(finding.summary ?? "");
+  const [savingSummary, setSavingSummary] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
+  // Attachments
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // Load attachments when the slide-over opens
+  useEffect(() => {
+    listAttachments(finding.id)
+      .then(setAttachments)
+      .catch(() => setAttachments([]));
+  }, [finding.id]);
+
+  const doSaveSummary = async () => {
+    setSavingSummary(true);
+    setSummaryError(null);
+    try {
+      const updated = await updateFinding(finding.id, { summary: summary || null });
+      onUpdated(updated);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingSummary(false);
+    }
+  };
+
+  const onFileChosen = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setUploading(true);
+      setUploadError(null);
+      try {
+        const att = await uploadAttachment(finding.id, file);
+        setAttachments((prev) => [...prev, att]);
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setUploading(false);
+        e.target.value = "";
+      }
+    },
+    [finding.id],
+  );
 
   const decide = async (decision: FindingValidationStatus) => {
     setBusy(true);
@@ -283,6 +434,52 @@ function FindingSlideOver({
 
   // Agents may run scan/enum paths only — never exploitation (CHARTER decided).
   const agentAllowed = finding.phase !== "exploit";
+
+  const runAgent = async () => {
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const res = await analyzeFinding(finding.id);
+      setSuggestions(res.suggestions);
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const acceptOne = async (s: Suggestion) => {
+    setDecidingId(s.id);
+    setAnalyzeError(null);
+    try {
+      const res = await acceptSuggestion(s.id);
+      setSuggestions((prev) =>
+        prev?.map((x) => (x.id === s.id ? res.suggestion : x)) ?? null,
+      );
+      if (res.dispatched) {
+        setDispatchedIds((prev) => new Set(prev).add(s.id));
+      }
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDecidingId(null);
+    }
+  };
+
+  const dismissOne = async (s: Suggestion) => {
+    setDecidingId(s.id);
+    setAnalyzeError(null);
+    try {
+      const updated = await dismissSuggestion(s.id);
+      setSuggestions((prev) =>
+        prev?.map((x) => (x.id === s.id ? updated : x)) ?? null,
+      );
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDecidingId(null);
+    }
+  };
 
   return (
     <>
@@ -330,28 +527,102 @@ function FindingSlideOver({
           {JSON.stringify(finding.data, null, 2)}
         </pre>
 
-        {/* Suggested attack path — populated by the orchestrator in Phase 9. */}
+        {/* Summary — analyst narrative that flows into the report */}
+        <div className="mt-5">
+          <h3 className="text-sm font-medium">Summary</h3>
+          <Textarea
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+            placeholder="Write a summary for the report…"
+            rows={4}
+            className="mt-2 text-sm"
+          />
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              size="sm"
+              disabled={savingSummary || summary === (finding.summary ?? "")}
+              onClick={doSaveSummary}
+            >
+              {savingSummary ? "Saving…" : "Save summary"}
+            </Button>
+            {summaryError && (
+              <p className="text-xs text-critical">{summaryError}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Screenshots / evidence attachments */}
+        <div className="mt-5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">Screenshots</h3>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+            >
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              {uploading ? "Uploading…" : "Add"}
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={onFileChosen}
+            />
+          </div>
+          {uploadError && (
+            <p className="mt-1 text-xs text-critical">{uploadError}</p>
+          )}
+          {attachments.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              No screenshots attached yet.
+            </p>
+          ) : (
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {attachments.map((att) => (
+                <AttachmentThumb
+                  key={att.id}
+                  attachment={att}
+                  onDelete={() =>
+                    setAttachments((prev) => prev.filter((a) => a.id !== att.id))
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Suggested attack path — Strategic watcher (Phase 9). */}
         <div className="mt-6 rounded-md border border-dashed border-border p-4">
           <h3 className="text-sm font-medium">Suggested attack path</h3>
           <p className="mt-1 text-xs text-muted-foreground/70">
-            <span className="text-critical">●</span> Phase 9 — the Strategic
-            watcher generates named paths (each a set of tasks) here. Then:
+            Strategic proposes next-step tasks (scan / enum only). Accepting
+            agent-eligible tasks dispatches a worker run; active tools still
+            stop at the approval gate.
           </p>
           <div className="mt-3 flex gap-2">
-            <Button size="sm" variant="outline" disabled title="Phase 9">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled
+              title="Analyst-driven attack path — coming next"
+            >
               Analyst (manual)
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled
+              disabled={!agentAllowed || analyzing}
+              onClick={runAgent}
               title={
                 agentAllowed
-                  ? "Phase 9"
+                  ? "Ask Strategic to propose next steps"
                   : "Agents never run exploitation — analyst only"
               }
             >
-              Agent (automate)
+              {analyzing ? "Thinking…" : "Agent (automate)"}
             </Button>
           </div>
           {!agentAllowed && (
@@ -359,6 +630,68 @@ function FindingSlideOver({
               Exploitation is analyst-only — the Agent option is disabled for
               this phase.
             </p>
+          )}
+          {analyzeError && (
+            <p className="mt-2 text-xs text-critical">{analyzeError}</p>
+          )}
+          {suggestions !== null && suggestions.length === 0 && (
+            <p className="mt-3 text-xs text-muted-foreground/70">
+              Strategic had no follow-up tasks to propose.
+            </p>
+          )}
+          {suggestions !== null && suggestions.length > 0 && (
+            <ul className="mt-3 space-y-2">
+              {suggestions.map((s) => (
+                <li
+                  key={s.id}
+                  className="rounded-md border border-border bg-background p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium leading-snug">
+                        {s.title}
+                      </p>
+                      {s.body && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {s.body}
+                        </p>
+                      )}
+                      <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/60">
+                        {String(s.payload.tool ?? "?")} →{" "}
+                        {String(s.payload.target ?? "?")}
+                        {" · "}
+                        {String(s.payload.task_kind ?? "?")}
+                      </p>
+                    </div>
+                    {s.status === "open" && (
+                      <div className="flex shrink-0 gap-1">
+                        <Button
+                          size="sm"
+                          disabled={decidingId === s.id}
+                          onClick={() => acceptOne(s)}
+                        >
+                          Accept
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={decidingId === s.id}
+                          onClick={() => dismissOne(s)}
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    )}
+                    {s.status !== "open" && (
+                      <span className="shrink-0 self-center text-xs text-muted-foreground capitalize">
+                        {s.status}
+                        {dispatchedIds.has(s.id) ? " · dispatched" : ""}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
 

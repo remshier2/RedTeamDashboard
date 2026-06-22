@@ -2,14 +2,27 @@
 
 Alembic's env.py imports this module so autogenerate can see all tables.
 """
+from app.models.agent_execution import (
+    AgentExecution,
+    AgentExecutionStatus,
+    AgentTrigger,
+)
 from app.models.api_key import APIKey, APIKeyScope, scope_satisfies
 from app.models.approval import Approval, ApprovalStatus, RiskLevel
+from app.models.attachment import Attachment
 from app.models.audit_log import ActorType, AuditLog
 from app.models.authorization import Authorization
 from app.models.engagement import Engagement, EngagementStatus
 from app.models.finding import Finding, FindingPhase, FindingStatus, Severity
 from app.models.observation import Observation
 from app.models.scope_item import ScopeItem, ScopeKind
+from app.models.suggestion import (
+    AgentName,
+    Suggestion,
+    SuggestionKind,
+    SuggestionStatus,
+)
+from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
 from app.models.user import User
 from app.models.user_provider_key import ProviderKeyKind, UserProviderKey
 
@@ -17,6 +30,11 @@ __all__ = [
     "APIKey",
     "APIKeyScope",
     "ActorType",
+    "AgentExecution",
+    "Attachment",
+    "AgentExecutionStatus",
+    "AgentName",
+    "AgentTrigger",
     "Approval",
     "ApprovalStatus",
     "AuditLog",
@@ -27,11 +45,18 @@ __all__ = [
     "FindingPhase",
     "FindingStatus",
     "Observation",
+    "OwnerEligibility",
     "ProviderKeyKind",
     "RiskLevel",
     "ScopeItem",
     "ScopeKind",
     "Severity",
+    "Suggestion",
+    "SuggestionKind",
+    "SuggestionStatus",
+    "Task",
+    "TaskKind",
+    "TaskStatus",
     "User",
     "UserProviderKey",
     "scope_satisfies",

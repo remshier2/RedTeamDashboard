@@ -107,9 +107,31 @@ export interface Finding {
   data: Record<string, unknown>;
   severity: Severity;
   title: string;
+  summary?: string | null;
   phase: FindingPhase;
   status: FindingValidationStatus;
   validated_at: string | null;
+  created_at: string;
+}
+
+// Payload for POST /engagements/{slug}/findings/import
+export interface FindingImport {
+  title: string;
+  severity?: Severity;
+  phase?: FindingPhase;
+  summary?: string;
+  target?: string;
+  source_tool?: string;
+  details?: Record<string, unknown>;
+}
+
+// Attachment metadata (raw bytes fetched separately via GET /attachments/{id})
+export interface Attachment {
+  id: string;
+  finding_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
   created_at: string;
 }
 
@@ -168,6 +190,35 @@ export interface ProviderKey {
   updated_at: string;
 }
 
+// ─── Phase 9 orchestrator ──────────────────────────────────────────────────
+
+export type TaskKind = "scan" | "enum" | "exploit";
+export type OwnerEligibility = "agent" | "analyst" | "either";
+export type TaskStatus =
+  | "pending"
+  | "dispatched"
+  | "running"
+  | "completed"
+  | "failed"
+  | "deferred"
+  | "cancelled";
+
+export interface Task {
+  id: string;
+  engagement_id: string;
+  finding_id: string | null;
+  title: string;
+  kind: TaskKind;
+  owner_eligibility: OwnerEligibility;
+  status: TaskStatus;
+  payload: Record<string, unknown>;
+  run_id: string | null;
+  dispatched_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ProviderKeyEntry {
   name: string;
   provider: string;
@@ -195,6 +246,71 @@ export interface ProviderKeyImportResult {
   duplicates: ProviderKeyImportErrorRow[];
 }
 
+export type SuggestionKind = "task" | "ephemeral" | "note";
+export type SuggestionStatus = "open" | "accepted" | "dismissed";
+export type AgentName = "strategic" | "tactical";
+
+export interface Suggestion {
+  id: string;
+  engagement_id: string;
+  finding_id: string | null;
+  title: string;
+  body: string | null;
+  kind: SuggestionKind;
+  payload: Record<string, unknown>;
+  status: SuggestionStatus;
+  created_by_agent: AgentName;
+  decided_by: string | null;
+  decided_at: string | null;
+  task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalyzeFindingResponse {
+  execution_id: string;
+  suggestions: Suggestion[];
+}
+
+export interface AcceptSuggestionResponse {
+  suggestion: Suggestion;
+  task: Task | null;
+  dispatched: boolean;
+}
+
+// ─── Scope bulk-import ─────────────────────────────────────────────────────
+
+export interface ScopeImportPreviewRow {
+  line: number;
+  value: string;
+  kind: ScopeKind;
+  is_exclusion: boolean;
+}
+
+export interface ScopeImportErrorRow {
+  line: number;
+  raw: string;
+  reason: string;
+}
+
+export interface ScopeImportDuplicateRow {
+  line: number;
+  value: string;
+  kind: ScopeKind;
+  is_exclusion: boolean;
+}
+
+export interface ScopeImportPreview {
+  preview: ScopeImportPreviewRow[];
+  errors: ScopeImportErrorRow[];
+  would_create: number;
+}
+
+export interface ScopeImportResult {
+  created: ScopeItem[];
+  errors: ScopeImportErrorRow[];
+  duplicates: ScopeImportDuplicateRow[];
+}
 
 export type LLMProvider = "anthropic" | "openai" | "azure" | "ollama";
 
@@ -257,3 +373,33 @@ export type RunEvent =
   | { type: "run.errored"; thread_id: string; error: string };
 
 export type RunEventType = RunEvent["type"];
+
+// ─── Costs (Phase 11) ───────────────────────────────────────────────────────
+
+export type AgentCostName = "strategic" | "tactical";
+
+export interface CostBucket {
+  executions: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+}
+
+export interface AgentCost extends CostBucket {
+  agent: AgentCostName;
+}
+
+export interface ModelCost extends CostBucket {
+  provider: string | null;
+  model: string | null;
+  priced: boolean;
+}
+
+export interface CostRollup {
+  engagement_id: string;
+  engagement_slug: string;
+  total: CostBucket;
+  by_agent: AgentCost[];
+  by_model: ModelCost[];
+  unpriced_models: string[];
+}

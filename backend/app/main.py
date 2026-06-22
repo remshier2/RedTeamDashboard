@@ -1,3 +1,20 @@
+"""
+RedTeamDashboard — Defensive Security Operations and Governance Platform
+
+This FastAPI application provides the HTTP and MCP (Model Context Protocol) surface
+for managing authorized security engagements.
+
+**Charter:**
+- Approval-gated execution: Every active tool call passes a scope + risk gate and
+  is recorded as an Approval with an immutable audit_log.
+- Agents assist, analysts decide: Automated agents perform enumeration and scanning
+  only. Validation/proof-of-concept work is analyst-only.
+- In-scope enforcement: Recon/OSINT tooling runs only against targets explicitly
+  defined by the analyst as in-scope.
+
+The MCP server exposes tools for Claude Code and other AI assistants, with the same
+approval gates and audit logging as the web UI.
+"""
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,6 +26,7 @@ from app.api.authorizations import router as authorizations_router
 from app.api.deps import AsyncRedisClient, DbSession
 from app.api.engagements import router as engagements_router
 from app.api.events import router as events_router
+from app.api.orchestrator import router as orchestrator_router
 from app.api.provider_keys import router as provider_keys_router
 from app.api.reports import router as reports_router
 from app.core.config import settings
@@ -36,6 +54,7 @@ app.include_router(approvals_router)
 app.include_router(authorizations_router)
 app.include_router(api_keys_router)
 app.include_router(events_router)
+app.include_router(orchestrator_router)
 app.include_router(provider_keys_router)
 app.include_router(reports_router)
 

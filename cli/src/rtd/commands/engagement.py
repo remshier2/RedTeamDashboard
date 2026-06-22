@@ -212,6 +212,15 @@ def flush_cmd(ctx: click.Context, slug: str, yes: bool) -> None:
 # Observations
 # ---------------------------------------------------------------------------
 
+# Display labels for phase enum values (internal API values -> user-visible labels)
+PHASE_LABELS = {
+    "osint": "OSINT",
+    "vuln_scan": "Vulnerability Scan",
+    "exploit": "Validation",
+    "phishing": "Phishing",
+    "general": "General",
+}
+
 
 @engagement_group.group("observations")
 def observations_group() -> None:
@@ -231,9 +240,10 @@ def observations_list(ctx: click.Context, slug: str) -> None:
     t.add_column("content")
     t.add_column("created")
     for r in rows:
+        phase_display = PHASE_LABELS.get(r.get("phase"), r.get("phase") or "")
         t.add_row(
             r["id"][:8],
-            r.get("phase") or "",
+            phase_display,
             r["content"][:80] + ("…" if len(r["content"]) > 80 else ""),
             r["created_at"][:19],
         )
@@ -245,8 +255,8 @@ def observations_list(ctx: click.Context, slug: str) -> None:
 @click.argument("content")
 @click.option(
     "--phase",
-    type=click.Choice(["osint", "vuln_scan", "exploit", "phishing", "general"]),
-    help="Optional phase tag.",
+    type=click.Choice(list(PHASE_LABELS.keys())),
+    help=f"Optional phase tag: {', '.join(PHASE_LABELS.values())}.",
 )
 @click.pass_context
 def observations_add(ctx: click.Context, slug: str, content: str, phase: str | None) -> None:
@@ -320,7 +330,8 @@ def import_findings_cmd(ctx: click.Context, slug: str, file: str) -> None:
     t.add_column("phase")
     t.add_column("target")
     for f in findings:
-        t.add_row(f["title"][:60], f["severity"], f["phase"], f.get("target") or "")
+        phase_display = PHASE_LABELS.get(f.get("phase"), f.get("phase", ""))
+        t.add_row(f["title"][:60], f["severity"], phase_display, f.get("target") or "")
     from rtd.output import console
     emit(findings, json_mode=ctx.obj.json_mode, table=t)
     if not ctx.obj.json_mode:

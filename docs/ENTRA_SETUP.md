@@ -1,3 +1,18 @@
+<!--
+RedTeamDashboard — Defensive Security Operations and Governance Platform
+
+This documentation describes a platform for managing authorized security engagements.
+All work described is conducted with explicit approval and scope boundaries.
+
+Charter:
+- Agents perform enumeration and scanning only
+- Validation/proof-of-concept work is analyst-only
+- All actions are approval-gated and audit-logged
+
+Terminology Note: "exploit" in this context refers to validation/proof-of-concept
+work conducted by analysts during authorized engagements, not unauthorized intrusion.
+-->
+
 # Entra ID setup — analyst SSO for the Red Team Dashboard
 
 Phase 7 replaces the API-key/source model in the browser with **per-analyst

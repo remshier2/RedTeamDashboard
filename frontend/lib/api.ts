@@ -7,19 +7,29 @@
 import { API_BASE_URL, DEV_USER, ENTRA_ENABLED } from "@/lib/config";
 import { getAccessToken } from "@/lib/msal";
 import type {
+  AcceptSuggestionResponse,
+  AnalyzeFindingResponse,
   Approval,
   ApprovalStatus,
+  Attachment,
   Authorization,
+  CostRollup,
   Engagement,
   EngagementStatus,
   Entity,
   Finding,
+  FindingImport,
   FindingPhase,
   FindingValidationStatus,
   Observation,
   RunModel,
   RunStartResponse,
+  Severity,
   ScopeKind,
+  Suggestion,
+  SuggestionStatus,
+  Task,
+  TaskStatus,
 } from "@/lib/types";
 
 // Auth-only headers (no Content-Type — request() adds that for JSON bodies).
@@ -111,6 +121,25 @@ export function deleteScopeItem(slug: string, scopeId: string): Promise<void> {
   return request<void>(`/engagements/${slug}/scope/${scopeId}`, {
     method: "DELETE",
   });
+}
+
+export function parseScope(
+  text: string,
+): Promise<import("@/lib/types").ScopeImportPreview> {
+  return request<import("@/lib/types").ScopeImportPreview>("/scope/parse", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function importScope(
+  slug: string,
+  text: string,
+): Promise<import("@/lib/types").ScopeImportResult> {
+  return request<import("@/lib/types").ScopeImportResult>(
+    `/engagements/${slug}/scope/import`,
+    { method: "POST", body: JSON.stringify({ text }) },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +307,54 @@ export function updateProviderKey(
 }
 
 // ---------------------------------------------------------------------------
+// Orchestrator (Phase 9)
+// ---------------------------------------------------------------------------
+
+export function analyzeFinding(
+  findingId: string,
+): Promise<AnalyzeFindingResponse> {
+  return request<AnalyzeFindingResponse>(`/findings/${findingId}/analyze`, {
+    method: "POST",
+  });
+}
+
+export function listSuggestions(
+  slug: string,
+  status?: SuggestionStatus,
+): Promise<Suggestion[]> {
+  const q = status ? `?status=${status}` : "";
+  return request<Suggestion[]>(`/engagements/${slug}/suggestions${q}`);
+}
+
+export function acceptSuggestion(
+  suggestionId: string,
+): Promise<AcceptSuggestionResponse> {
+  return request<AcceptSuggestionResponse>(
+    `/suggestions/${suggestionId}/accept`,
+    { method: "POST" },
+  );
+}
+
+export function dismissSuggestion(suggestionId: string): Promise<Suggestion> {
+  return request<Suggestion>(`/suggestions/${suggestionId}/dismiss`, {
+    method: "POST",
+  });
+}
+
+export function listTasks(slug: string, _status?: TaskStatus): Promise<Task[]> {
+  // status filter accepted for symmetry but currently always lists all
+  return request<Task[]>(`/engagements/${slug}/tasks`);
+}
+
+// ---------------------------------------------------------------------------
+// Costs (Phase 11)
+// ---------------------------------------------------------------------------
+
+export function getEngagementCosts(slug: string): Promise<CostRollup> {
+  return request<CostRollup>(`/engagements/${slug}/costs`);
+}
+
+// ---------------------------------------------------------------------------
 // Reports (PDF export)
 // ---------------------------------------------------------------------------
 
@@ -306,4 +383,91 @@ function _filenameFromDisposition(value: string | null): string | null {
   if (!value) return null;
   const match = /filename="?([^"]+)"?/i.exec(value);
   return match ? match[1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Findings import + update
+// ---------------------------------------------------------------------------
+
+export function importFindings(
+  slug: string,
+  findings: FindingImport[],
+): Promise<Finding[]> {
+  return request<Finding[]>(`/engagements/${slug}/findings/import`, {
+    method: "POST",
+    body: JSON.stringify(findings),
+  });
+}
+
+export function updateFinding(
+  findingId: string,
+  body: {
+    title?: string;
+    summary?: string | null;
+    severity?: Severity;
+    phase?: FindingPhase;
+  },
+): Promise<Finding> {
+  return request<Finding>(`/findings/${findingId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Engagement JSON export
+// ---------------------------------------------------------------------------
+
+export async function downloadEngagementExport(slug: string): Promise<void> {
+  const data = await request<Record<string, unknown>>(`/engagements/${slug}/export`);
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${slug}-export.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// Finding attachments
+// ---------------------------------------------------------------------------
+
+export function listAttachments(findingId: string): Promise<Attachment[]> {
+  return request<Attachment[]>(`/findings/${findingId}/attachments`);
+}
+
+export async function uploadAttachment(
+  findingId: string,
+  file: File,
+): Promise<Attachment> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE_URL}/findings/${findingId}/attachments`, {
+    method: "POST",
+    // No Content-Type header — browser sets multipart boundary automatically.
+    headers: await authHeaders(),
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<Attachment>;
+}
+
+export async function loadAttachmentBlob(attachmentId: string): Promise<string> {
+  const response = await fetch(`${API_BASE_URL}/attachments/${attachmentId}`, {
+    headers: await authHeaders(),
+  });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
+export function deleteAttachment(attachmentId: string): Promise<void> {
+  return request<void>(`/attachments/${attachmentId}`, { method: "DELETE" });
 }

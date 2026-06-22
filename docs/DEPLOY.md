@@ -1,3 +1,18 @@
+<!--
+RedTeamDashboard — Defensive Security Operations and Governance Platform
+
+This documentation describes a platform for managing authorized security engagements.
+All work described is conducted with explicit approval and scope boundaries.
+
+Charter:
+- Agents perform enumeration and scanning only
+- Validation/proof-of-concept work is analyst-only
+- All actions are approval-gated and audit-logged
+
+Terminology Note: "exploit" in this context refers to validation/proof-of-concept
+work conducted by analysts during authorized engagements, not unauthorized intrusion.
+-->
+
 # Red Team Dashboard — Deploy & Operate
 
 How the system is wired, how to stand up a fresh environment in your own

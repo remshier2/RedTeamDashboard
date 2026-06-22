@@ -38,18 +38,22 @@ no hunting across screens for the next action.
 
 ## Where we are today (so the contributor has context)
 
-Already built / in flight on feature branches (`phase-7-pivot`, `phase-8-tabbed-findings`):
-- **Single-tenant pivot**: one hosted dashboard, **Entra (Microsoft) SSO** per
-  analyst; the old multi-"source" model is retired.
-- **Look**: all-black monochrome theme + a single ember accent.
-- **Engagement page**: tabbed shell (OSINT · Vuln Scan · Exploit · Phishing ·
-  Results · Costs) — *currently top tabs; this charter proposes moving to a left
-  nav (see Idea 0).*
-- **Findings backend (Phase 8a)**: findings are phase-tagged and gated behind
-  analyst **validation** (pending → validated); only validated findings hit the
-  PDF report.
-- **Agents (planned)**: a **Strategic** watcher (logs/plans/suggests, never
-  acts) + a **Tactical** manager (auto-dispatches scan/enum workers, gated).
+**Completed** (merged to `main` as of 2026-06-18):
+- **Phase 7**: Single-tenant pivot, Entra SSO, dark monochrome theme, ember accent
+- **Phase 8a**: Findings validation workflow (pending → validated)
+- **Phase 8e**: Observations system, findings bulk import, observations in PDF
+- **Phase 9**: Strategic + Tactical orchestrator agents, task queue, suggestions
+- **Scope bulk import**: Free-form scope text parser + importer component
+- **BYO keys**: User provider keys with per-user encryption
+
+**In progress** (on feature branches):
+- **Phase 11**: Cost engine (LLM spend tracking, rollup, Costs tab UI)
+- **Phase 10**: Hybrid execution (import-first model), ephemeral executor
+
+**Engagement page**: tabbed shell with left navigation (OSINT · Vuln Scan ·
+Exploit · Phishing · Results · Costs · Observations). Findings are phase-tagged
+and gated behind analyst **validation** (pending → validated); only validated
+findings hit the PDF report.
 
 ---
 
@@ -79,7 +83,8 @@ Already built / in flight on feature branches (`phase-7-pivot`, `phase-8-tabbed-
 
 - **Takeaway:** dark left sidebar; icon + label; grouped sections with headers;
   active item gets the ember accent; each click is a destination, not a scroll.
-- **Status:** proposed — **revises** the Phase 7 top-tab shell.
+- **Status:** ✅ **Completed** (Phase 7) — left nav implemented with icon+label rows,
+  grouped sections, ember accent on active item.
 
 ### 1. Findings front-and-center (and their own database)
 - **Want:** opening an engagement shows **findings first** — the very first
@@ -99,9 +104,9 @@ Already built / in flight on feature branches (`phase-7-pivot`, `phase-8-tabbed-
 
 - **Want:** findings get **their own database/table** so they're easy to query
   and access directly (not buried inside run/event payloads).
-- **Status:** backend partially there (Phase 8a gave findings phase + validation
-  status + a clean `findings` store, `ID`-style addressing, status). The
-  metrics strip + findings-table-first landing is **proposed** frontend work.
+- **Status:** ✅ **Completed** (Phase 8a) — findings have phase + validation
+  status + clean `findings` store with `ID`-style addressing. Findings table
+  is implemented in the engagement view.
 
 ### 2. Modular, clickable findings → suggested attack path
 - **Flow:**
@@ -120,9 +125,9 @@ Already built / in flight on feature branches (`phase-7-pivot`, `phase-8-tabbed-
 
 - **Box vs. window:** implementer's choice — leaning a **slide-over panel** so
   the findings table stays visible behind it.
-- **Status:** proposed. Refines `ARCHITECTURE_SKETCH_V2.md` §6 (actionable
-  findings) — now with **named Paths containing Tasks** + a per-path
-  Analyst/Agent choice.
+- **Status:** 🔄 **In progress** (Phase 9) — Strategic agent generates suggestions
+  with per-finding task lists. Findings slide-over shows actionable suggestions
+  with Analyst/Agent choice. Exploit tasks are analyst-only enforced.
 - ✅ **Decided (safety):** the **Agent** button only runs **scan/enumeration**
   tasks. **Exploitation tasks are Analyst-only** — agents never exploit
   (confirmed 2026-06-16). So on an exploitation Path the Agent button is
@@ -190,10 +195,29 @@ Already built / in flight on feature branches (`phase-7-pivot`, `phase-8-tabbed-
 
 ---
 
+## Completed (moved from "Open ideas")
+
+### 0. Design — move navigation to a LEFT sidebar
+✅ **Completed** (Phase 7)
+
+### 1. Findings front-and-center (and their own database)
+✅ **Completed** (Phase 8a)
+
+### 2. Modular, clickable findings → suggested attack path
+🔄 **Partially completed** (Phase 9) — Strategic agent suggests tasks; full
+attack path UI in progress.
+
+### 3. Nessus-style engagement creation / overview
+🔄 **Partially completed** — Scope bulk import provides Nessus-style
+free-form scope entry; full wizard workflow in progress.
+
+### 4. Entities tab — entity correlation
+🔄 **Proposed** — Data model planned; UI implementation pending.
+
 ## Parking lot (raise anytime)
 
 - _(contributor: add your ideas here — initials + date)_
 
 ---
 
-*Living document. Last updated 2026-06-16. Maintainers: Nasir + contributor.*
+*Living document. Last updated 2026-06-18. Maintainers: Nasir + Ken.*
