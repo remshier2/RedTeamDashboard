@@ -220,6 +220,45 @@ az containerapp revision restart -n rtd-prod-app -g rtd-prod --revision "$REV"
 az group delete -n rtd-prod -y
 ```
 
+## Deploy from GitHub (on-demand)
+
+The `Deploy` workflow at `.github/workflows/deploy.yml` is a manual-trigger
+pipeline: it builds the current `main` HEAD, pushes the image to GHCR
+tagged `:main-<short-sha>`, and rolls the Container App's backend + worker
+containers via two `az containerapp update` calls. No `on: push` — the
+workflow only fires when *you* run it.
+
+**One-time setup** (after `install.sh`):
+
+```bash
+export GITHUB_OWNER=DonPercival0x45
+export GITHUB_REPO=RedTeamDashboard
+export AZURE_RG=rtd-prod
+export AZURE_APP=rtd-prod-app
+./infra/azure-kit/scripts/setup-github-deploy.sh
+```
+
+This creates an Entra app registration with a federated credential trusting
+the main branch via OIDC, grants `Container Apps Contributor` on the
+resource group, and writes the five `AZURE_*` repo variables. No long-lived
+service principal secret — GitHub Actions exchanges its OIDC token for an
+Azure access token at run time.
+
+**Trigger a deploy:**
+
+```bash
+gh workflow run deploy.yml
+# or: GitHub UI -> Actions -> Deploy -> "Run workflow"
+```
+
+**Rollback to the prior revision:**
+
+```bash
+az containerapp revision list -n rtd-prod-app -g rtd-prod -o table
+# Pick the prior revision name, then:
+az containerapp revision activate -n rtd-prod-app -g rtd-prod --revision <name>
+```
+
 ## Entra ID SSO (optional)
 
 Run `setup-entra.sh` before `install.sh` to create the app registration, then
