@@ -180,36 +180,56 @@ def _extract_usage(response: Any) -> tuple[int | None, int | None]:
     )
 
 
-def _make_chat_model(provider: str, name: str) -> Any:
+def _make_chat_model(
+    provider: str,
+    name: str,
+    *,
+    api_key: str | None = None,
+    endpoint: str | None = None,
+) -> Any:
     """Provider-agnostic chat model factory used by Strategic.
 
     Cousin of ``app.orchestrator.llm.make_llm`` but WITHOUT ``.bind_tools()`` —
     Strategic doesn't tool-call, it returns structured JSON. Imports lazily so
     the unused providers' SDKs aren't required at import time.
+
+    ``api_key`` / ``endpoint`` come from the engagement creator's stored
+    UserProviderKey (BYO). When None, the SDK falls back to env-var
+    auto-detection — fine for tests and for engagements whose creator was
+    deleted (FK SET NULL).
     """
     provider = provider.lower()
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=name, max_tokens=4096)
+        kwargs: dict[str, Any] = {"model": name, "max_tokens": 4096}
+        if api_key:
+            kwargs["api_key"] = api_key
+        return ChatAnthropic(**kwargs)
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=name)
+        kwargs = {"model": name}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if endpoint:
+            kwargs["base_url"] = endpoint
+        return ChatOpenAI(**kwargs)
     if provider == "ollama":
         from langchain_ollama import ChatOllama
 
         from app.core.config import settings
 
-        return ChatOllama(model=name, base_url=settings.ollama_host)
+        # Ollama is keyless; per-user endpoint override wins over deployment default.
+        return ChatOllama(model=name, base_url=endpoint or settings.ollama_host)
     if provider == "azure":
         from langchain_openai import AzureChatOpenAI
 
         from app.core.config import settings
 
         return AzureChatOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key or None,
+            azure_endpoint=endpoint or settings.azure_openai_endpoint,
+            api_key=api_key or settings.azure_openai_api_key or None,
             azure_deployment=name or settings.azure_openai_deployment,
             api_version=settings.azure_openai_api_version,
         )
@@ -232,7 +252,25 @@ class StrategicAgent:
         self._provider = provider
         self._model_name = model_name
 
-    def _resolve_llm(self) -> tuple[Any, str, str]:
+    def _resolve_llm(
+        self,
+        *,
+        session: Session | None = None,
+        acting_user_id: uuid.UUID | None = None,
+    ) -> tuple[Any, str, str]:
+        """Build the LLM, threading the acting user's stored API key (BYO).
+
+        ``session`` + ``acting_user_id`` are the engagement creator's identity.
+        When both are provided, we look up their UserProviderKey row for the
+        resolved provider and pass the decrypted key into ``_make_chat_model``.
+        Raises ``NoProviderKeyError`` if the user has no key — the caller's
+        try/except will record this as a failed AgentExecution with the
+        message visible in the Costs tab.
+
+        When ``acting_user_id`` is None (e.g. engagement creator was deleted —
+        FK SET NULL), we skip the lookup and let SDK env-detection take over.
+        Tests inject ``self._llm`` directly and bypass this whole path.
+        """
         if self._llm is not None:
             return (
                 self._llm,
@@ -243,7 +281,21 @@ class StrategicAgent:
         model_name = self._model_name
         if not (provider and model_name):
             provider, model_name = default_provider_model()
-        return _make_chat_model(provider, model_name), provider, model_name
+        api_key: str | None = None
+        endpoint: str | None = None
+        if session is not None and acting_user_id is not None:
+            from app.services.provider_key_resolver import resolve_for_user
+
+            resolved = resolve_for_user(
+                session, user_id=acting_user_id, provider=provider
+            )
+            api_key = resolved.api_key
+            endpoint = resolved.endpoint
+        return (
+            _make_chat_model(provider, model_name, api_key=api_key, endpoint=endpoint),
+            provider,
+            model_name,
+        )
 
     def analyze_finding(
         self,
@@ -283,7 +335,11 @@ class StrategicAgent:
         session.flush()  # need execution.id below if we want to backref
 
         try:
-            llm, provider, model_name = self._resolve_llm()
+            # BYO key: Strategic uses the engagement creator's stored key.
+            # If the creator was deleted (FK SET NULL), fall through to env.
+            llm, provider, model_name = self._resolve_llm(
+                session=session, acting_user_id=engagement.created_by
+            )
             execution.model_provider = provider
             execution.model_name = model_name
             structured = llm.with_structured_output(_StrategicProposal)
