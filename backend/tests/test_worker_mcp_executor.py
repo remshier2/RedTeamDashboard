@@ -13,6 +13,7 @@ to the local registry. These tests cover three layers:
 """
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -251,6 +252,7 @@ class _ScriptedLLM:
 def _scope_for(domain: str) -> list[ScopeSnapshot]:
     return [
         ScopeSnapshot(
+            id=uuid.uuid4(),
             kind=ScopeKind.domain,
             value=domain,
             is_exclusion=False,
