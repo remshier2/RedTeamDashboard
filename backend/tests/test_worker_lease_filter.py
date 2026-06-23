@@ -65,7 +65,15 @@ def _make_task(db: Session, engagement: Engagement) -> Task:
 def _capture_factory() -> tuple[list[tuple[Any, Any]], Any]:
     captured: list[tuple[Any, Any]] = []
 
-    def factory(model: Any, allowed_tools: Any = None) -> Any:
+    def factory(
+        model: Any,
+        allowed_tools: Any = None,
+        mcp_url: Any = None,
+        lease_token: Any = None,
+    ) -> Any:
+        # Stage 1.5: mcp_url / lease_token are also threaded through, but
+        # this suite only asserts on the lease's allowed_tools mapping.
+        del mcp_url, lease_token
         captured.append((model, allowed_tools))
         return object()
 

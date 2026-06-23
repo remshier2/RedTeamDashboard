@@ -43,6 +43,7 @@ def make_llm(
     *,
     api_key: str | None = None,
     endpoint: str | None = None,
+    registry: Mapping[str, ToolSpec] | None = None,
 ) -> Any:
     """Return a tool-bound chat model for an explicit (provider, model_name).
 
@@ -54,6 +55,11 @@ def make_llm(
     UserProviderKey by ``app.services.provider_key_resolver``). When omitted,
     the LLM constructors fall back to their library's env-var auto-detection
     so the existing test paths + dev fallback still work.
+
+    ``registry`` narrows the tool surface bound to the LLM — Stage 1 of the
+    MCP lease wiring filtered the dispatch node but left the LLM seeing
+    every tool. Threading the lease's allowed_tools through here closes
+    that gap so the agent only ever proposes leased tools.
     """
     provider = provider.lower()
 
@@ -110,7 +116,7 @@ def make_llm(
             "anthropic, openai, ollama, azure"
         )
 
-    return llm.bind_tools(tool_schemas())
+    return llm.bind_tools(tool_schemas(registry))
 
 
 def default_provider_model() -> tuple[str, str]:

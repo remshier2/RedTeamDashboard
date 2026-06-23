@@ -281,15 +281,31 @@ def _run_osint(tool_name: str, engagement_slug: str, args: dict[str, Any]) -> di
 
         result = run_tool(tool_name, args)
 
+        # Lease-bound call (Stage 1.5 worker): the worker owns finding
+        # persistence + Redis event emission for both legacy and MCP
+        # execution paths, so return the raw findings instead of writing
+        # them server-side. The single audit row written here remains the
+        # tool-call audit source — no duplication.
+        leased = get_current_lease() is not None
+
         payload = {
             "tool": tool_name,
             "args": args,
             "ok": result.ok,
             "risk": decision.risk.value if decision.risk else None,
+            "via": "mcp.lease" if leased else "mcp.api",
         }
         if not result.ok:
             payload["error"] = result.error
         _write_audit(session, eng, user, f"mcp.tool.{tool_name}", payload)
+
+        if leased:
+            if not result.ok:
+                return {"error": result.error}
+            return {
+                **result.data,
+                "_lease_findings": list(result.findings or []),
+            }
 
         if result.ok and result.findings:
             stored = _store_findings(session, eng, tool_name, result.findings)

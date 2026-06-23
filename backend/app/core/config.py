@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     # the public hostname (e.g. https://<app>.azurecontainerapps.io).
     public_base_url: str = "http://backend:8000"
 
+    # API key the worker uses to authenticate to the MCP server when
+    # executing a leased task. Required for Stage 1.5 MCP execution.
+    # When blank, the worker falls back to local registry execution
+    # (legacy path). Provision once per deployment with a cli-scoped key.
+    worker_mcp_api_key: str = ""
+
     # CORS allow-origins for the browser viewer. Defaults cover local dev.
     # Kit deploys override this with the central viewer's origin (Phase 6)
     # so a browser there can call this tenant's API directly.

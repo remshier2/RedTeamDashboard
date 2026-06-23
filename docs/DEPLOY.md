@@ -315,6 +315,8 @@ Both modes write findings to the same database. The viewer shows results from ei
 
 **Authentication:** every request to `/mcp/*` requires `X-API-Key`. A `cli` scoped key covers OSINT tools and findings; `admin` scope is required for archive and flush.
 
+**Worker MCP key (Stage 1.5):** when the worker dispatches a leased task, it calls the MCP server over SSE using `WORKER_MCP_API_KEY` + the per-task `X-Lease-Token`. The lease validates server-side and gates the tool surface to the lease's `allowed_tools`. Mint a `cli`-scoped key once per deployment and set it in env (Bicep: read from Key Vault secret `worker-mcp-api-key`). When blank, the worker falls back to local-registry execution — same behavior, no MCP round-trip.
+
 ## Engagement lifecycle
 
 Engagements move through three states: **active → archived → flushed**.

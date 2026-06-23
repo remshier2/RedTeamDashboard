@@ -38,6 +38,12 @@ from app.orchestrator.state import OsintState
 from app.orchestrator.tools import ToolSpec, get_tool
 from app.orchestrator.tools.runtime import ToolImpl, ToolResult, run_tool
 
+# Stage 1.5 MCP execution: when set on the dispatch node, tool calls are
+# routed to the MCP server over SSE instead of the local IMPLEMENTATIONS
+# registry. Same ``(name, args) -> ToolResult`` contract as ``run_tool`` so
+# the dispatch logic (gate, interrupt, fan-out) stays identical.
+MCPExecutor = Callable[[str, Mapping[str, Any]], ToolResult]
+
 # Custom types we serialize into graph state. Explicit allowlisting silences
 # LangGraph's "unregistered type" warning at deserialize and future-proofs us
 # against LANGGRAPH_STRICT_MSGPACK=true. All standard types (langchain
@@ -76,12 +82,28 @@ def _tool_payload(result: ToolResult) -> str:
     return json.dumps({"error": result.error or "unknown error"})
 
 
+def _execute_tool(
+    name: str,
+    args: Mapping[str, Any],
+    *,
+    mcp_executor: MCPExecutor | None,
+    implementations: Mapping[str, ToolImpl] | None,
+) -> ToolResult:
+    """Single tool invocation: MCP path when an executor is wired, local
+    ``run_tool`` otherwise. Centralized so the batched-passive fan-out and
+    the main loop share the routing decision."""
+    if mcp_executor is not None:
+        return mcp_executor(name, args)
+    return run_tool(name, args, implementations=implementations)
+
+
 def _tool_dispatch_node(
     state: OsintState,
     *,
     registry: Mapping[str, ToolSpec] | None,
     implementations: Mapping[str, ToolImpl] | None,
     authorizer: Authorizer | None = None,
+    mcp_executor: MCPExecutor | None = None,
 ) -> dict[str, Any]:
     last = state["messages"][-1]
     if not isinstance(last, AIMessage) or not last.tool_calls:
@@ -120,6 +142,7 @@ def _tool_dispatch_node(
                     scope_items=scope_items,
                     registry=registry,
                     implementations=implementations,
+                    mcp_executor=mcp_executor,
                 )
                 out_messages.extend(update_chunk["messages"])
                 out_findings.extend(update_chunk["findings"])
@@ -262,7 +285,12 @@ def _tool_dispatch_node(
                 ],
             }
 
-        result = run_tool(name, effective_args, implementations=implementations)
+        result = _execute_tool(
+            name,
+            effective_args,
+            mcp_executor=mcp_executor,
+            implementations=implementations,
+        )
         out_messages.append(
             ToolMessage(content=_tool_payload(result), tool_call_id=call_id)
         )
@@ -386,6 +414,7 @@ def _dispatch_batched_passive(
     scope_items: list[ScopeSnapshot],
     registry: Mapping[str, ToolSpec] | None,
     implementations: Mapping[str, ToolImpl] | None,
+    mcp_executor: MCPExecutor | None = None,
 ) -> dict[str, list[Any]]:
     """Fan-out a single tool_call across a list of (already-normalized) targets.
 
@@ -415,7 +444,12 @@ def _dispatch_batched_passive(
             per_target.append({"target": target, "denied": decision.reason})
             continue
 
-        result = run_tool(name, sub_args, implementations=implementations)
+        result = _execute_tool(
+            name,
+            sub_args,
+            mcp_executor=mcp_executor,
+            implementations=implementations,
+        )
         if result.ok:
             findings.extend(_expand_findings(name, sub_args, result))
             per_target.append({"target": target, "data": result.data})
@@ -452,6 +486,7 @@ def build_graph(
     registry: Mapping[str, ToolSpec] | None = None,
     implementations: Mapping[str, ToolImpl] | None = None,
     authorizer: Authorizer | None = None,
+    mcp_executor: MCPExecutor | None = None,
 ) -> Any:
     """Compile and return the OSINT StateGraph.
 
@@ -462,6 +497,12 @@ def build_graph(
     path) without mutating package globals. ``authorizer`` resolves standing
     session grants so covered active calls auto-approve instead of interrupting;
     omit it and every active/destructive call interrupts for a human.
+
+    ``mcp_executor`` (Stage 1.5) routes every tool invocation through the MCP
+    server over SSE instead of the local ``IMPLEMENTATIONS`` registry. The
+    scope gate, interrupt-for-active, fan-out, and host resolution all stay
+    in-process — only the *execution* of the tool moves. When omitted, runs
+    use the legacy local-execution path (no lease, no MCP url on envelope).
     """
     builder: StateGraph = StateGraph(OsintState)
     builder.add_node("agent", lambda s: _agent_node(s, llm=llm))
@@ -472,6 +513,7 @@ def build_graph(
             registry=registry,
             implementations=implementations,
             authorizer=authorizer,
+            mcp_executor=mcp_executor,
         ),
     )
     builder.add_edge(START, "agent")

@@ -397,7 +397,7 @@ def test_run_runner_requires_exactly_one_of_graph_or_factory() -> None:
     with pytest.raises(ValueError, match="exactly one"):
         RunRunner(
             graph=object(),
-            graph_factory=lambda _m, _a=None: object(),
+            graph_factory=lambda _m, _a=None, _u=None, _t=None: object(),
             redis_client=None,  # type: ignore[arg-type]
             session_factory=SessionLocal,
         )
@@ -406,7 +406,15 @@ def test_run_runner_requires_exactly_one_of_graph_or_factory() -> None:
 def test_run_runner_calls_factory_with_envelope_model() -> None:
     received: list[tuple[Any, Any]] = []
 
-    def factory(model: Any, allowed_tools: Any = None) -> Any:
+    def factory(
+        model: Any,
+        allowed_tools: Any = None,
+        mcp_url: Any = None,
+        lease_token: Any = None,
+    ) -> Any:
+        # Stage 1.5: signature accepts mcp_url / lease_token; legacy
+        # envelopes here don't set them, so we only assert on model + allowed.
+        del mcp_url, lease_token
         received.append((model, allowed_tools))
         return object()
 

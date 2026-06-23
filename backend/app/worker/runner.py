@@ -105,7 +105,18 @@ def _build_system_prompt(snapshots: list[ScopeSnapshot]) -> str:
 SessionFactory = Callable[[], Session]
 
 
-GraphFactory = Callable[[Mapping[str, str] | None, list[str] | None], Any]
+# (model, allowed_tools, mcp_url, lease_token) — the last two are populated
+# from the envelope when the run is leased; the factory uses them to build
+# an MCP executor instead of the local-registry execution path.
+GraphFactory = Callable[
+    [
+        Mapping[str, str] | None,
+        list[str] | None,
+        str | None,
+        str | None,
+    ],
+    Any,
+]
 
 
 class RunRunner:
@@ -175,8 +186,12 @@ class RunRunner:
                 finally:
                     session.close()
         allowed_tools = self._resolve_allowed_tools(envelope)
+        mcp_url_raw = envelope.get("mcp_url")
+        lease_token_raw = envelope.get("lease_token")
+        mcp_url = str(mcp_url_raw) if mcp_url_raw else None
+        lease_token = str(lease_token_raw) if lease_token_raw else None
         assert self._graph_factory is not None  # noqa: S101 — invariant of __init__
-        return self._graph_factory(model, allowed_tools)
+        return self._graph_factory(model, allowed_tools, mcp_url, lease_token)
 
     def _resolve_allowed_tools(
         self, envelope: Mapping[str, Any]

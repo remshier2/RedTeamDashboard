@@ -42,6 +42,8 @@ def main() -> None:
     def graph_factory(
         model: Mapping[str, Any] | None,
         allowed_tools: list[str] | None = None,
+        mcp_url: str | None = None,
+        lease_token: str | None = None,
     ) -> object:
         """Build a fresh graph per run with the requested LLM and tool surface.
 
@@ -56,21 +58,15 @@ def main() -> None:
 
         MCP leases: ``allowed_tools`` arrives from the runner's lease
         lookup. When present, we filter the global tool registry down to
-        the lease's curated surface so the agent can only see — and only
-        bind — those tools. When None, the registry stays full (legacy /
-        manual runs without a lease).
-        """
-        if model and model.get("provider") and model.get("name"):
-            llm = make_llm(
-                str(model["provider"]),
-                str(model["name"]),
-                api_key=model.get("api_key"),
-                endpoint=model.get("endpoint"),
-            )
-        else:
-            provider, model_name = default_provider_model()
-            llm = make_llm(provider, model_name)
+        the lease's curated surface AND bind only those schemas onto the
+        LLM (so the agent never proposes a tool outside the lease).
 
+        Stage 1.5 — MCP execution: when ``mcp_url`` + ``lease_token`` are
+        on the envelope AND a worker MCP API key is configured, build an
+        MCP executor and pass it to the graph so tool calls run server-side
+        over SSE. Without those (legacy / no lease / key not provisioned),
+        the local IMPLEMENTATIONS registry runs the tools.
+        """
         registry = None
         if allowed_tools is not None:
             from app.orchestrator.tools import all_tools
@@ -81,11 +77,34 @@ def main() -> None:
                 if spec.name in allowed_tools
             }
 
+        if model and model.get("provider") and model.get("name"):
+            llm = make_llm(
+                str(model["provider"]),
+                str(model["name"]),
+                api_key=model.get("api_key"),
+                endpoint=model.get("endpoint"),
+                registry=registry,
+            )
+        else:
+            provider, model_name = default_provider_model()
+            llm = make_llm(provider, model_name, registry=registry)
+
+        mcp_executor = None
+        if mcp_url and lease_token and settings.worker_mcp_api_key:
+            from app.worker.mcp_executor import make_mcp_executor
+
+            mcp_executor = make_mcp_executor(
+                mcp_url,
+                lease_token,
+                api_key=settings.worker_mcp_api_key,
+            )
+
         return build_graph(
             llm=llm,
             checkpointer=checkpointer,
             authorizer=authorizer,
             registry=registry,
+            mcp_executor=mcp_executor,
         )
 
     runner = RunRunner(
