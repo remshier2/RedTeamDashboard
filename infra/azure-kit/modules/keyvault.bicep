@@ -98,6 +98,15 @@ resource sAdminApiKey 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {
   properties: { value: 'PLACEHOLDER-installer-will-overwrite' }
 }
 
+// Stage 3+1: the worker hard-requires this. Installer mints a cli-scoped
+// key after deploy (same pattern as admin-api-key) and overwrites this
+// placeholder. The worker fails fast at boot until it's a real key.
+resource sWorkerMcpApiKey 'Microsoft.KeyVault/vaults/secrets@2024-04-01-preview' = {
+  parent: kv
+  name: 'worker-mcp-api-key'
+  properties: { value: 'PLACEHOLDER-installer-will-overwrite' }
+}
+
 output id string = kv.id
 output name string = kv.name
 output uri string = kv.properties.vaultUri

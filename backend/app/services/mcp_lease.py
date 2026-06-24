@@ -67,6 +67,54 @@ def mint(
     return lease
 
 
+def mint_for_engagement(
+    session: Session,
+    *,
+    engagement_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    allowed_tools: list[str],
+    context: dict[str, Any],
+    prompt_keys: list[str],
+    ttl_seconds: int = 3600,
+    requires_container: bool = False,
+) -> MCPLease:
+    """Mint a lease for a direct-run (analyst-typed) invocation that has
+    no orchestrator Task wrapping it.
+
+    Used by the ``POST /engagements/{slug}/runs`` path that ripped the
+    Stage 1.5 local-execution fallback — every worker run now carries
+    a lease, including freeform prompts. The ``thread_id`` is stashed
+    under ``context["_thread_id"]`` so the strategic consumer's release
+    path can find the lease without a Task (Task.run_id lookup returns
+    None for direct runs). Caller commits.
+    """
+    now = datetime.now(tz=UTC)
+    context_with_thread = dict(context)
+    context_with_thread["_thread_id"] = str(thread_id)
+    lease = MCPLease(
+        task_id=None,
+        engagement_id=engagement_id,
+        allowed_tools=list(allowed_tools),
+        context=context_with_thread,
+        prompt_keys=list(prompt_keys),
+        status=MCPLeaseStatus.active.value,
+        created_at=now,
+        expires_at=now + timedelta(seconds=ttl_seconds),
+        requires_container=requires_container,
+    )
+    session.add(lease)
+    session.flush()
+    logger.info(
+        "mcp_lease.minted_direct_run",
+        lease_id=str(lease.id),
+        engagement_id=str(engagement_id),
+        thread_id=str(thread_id),
+        tools=allowed_tools,
+        ttl_seconds=ttl_seconds,
+    )
+    return lease
+
+
 def release(
     session: Session,
     *,
@@ -152,6 +200,27 @@ def find_active_for_task(
         select(MCPLease)
         .where(
             MCPLease.task_id == task_id,
+            MCPLease.status == MCPLeaseStatus.active.value,
+        )
+        .order_by(MCPLease.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def find_active_for_thread(
+    session: Session, thread_id: uuid.UUID
+) -> MCPLease | None:
+    """Most recent active direct-run lease for ``thread_id``, or None.
+
+    Direct-run leases (task_id IS NULL) stash the run's thread_id under
+    ``context["_thread_id"]`` so the strategic consumer can find them on
+    terminal events. JSONB containment lookup is sufficient for the
+    handful of active leases per engagement we expect.
+    """
+    return session.execute(
+        select(MCPLease)
+        .where(
+            MCPLease.context["_thread_id"].astext == str(thread_id),
             MCPLease.status == MCPLeaseStatus.active.value,
         )
         .order_by(MCPLease.created_at.desc())

@@ -94,6 +94,15 @@ var secretsFromKeyVault = [
     keyVaultUrl: 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/secrets/azure-openai-deployment'
     identity: 'system'
   }
+  {
+    // Stage 3+1: the worker hard-requires this API key — no fallback to
+    // local-registry execution any more. Operator mints a cli-scoped key
+    // post-deploy and populates this KV secret; until they do, the
+    // worker fails fast at boot with a clear error.
+    name: 'worker-mcp-api-key'
+    keyVaultUrl: 'https://${keyVaultName}${environment().suffixes.keyvaultDns}/secrets/worker-mcp-api-key'
+    identity: 'system'
+  }
 ]
 
 // Shared between backend + worker (NOT redis — redis only needs its own env).
@@ -118,6 +127,7 @@ var appEnv = [
   { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
   { name: 'ACA_MCP_URL', value: acaMcpUrl }
   { name: 'ACA_MCP_APP_ENABLED', value: string(acaMcpAppEnabled) }
+  { name: 'WORKER_MCP_API_KEY', secretRef: 'worker-mcp-api-key' }
 ]
 
 // ---------------------------------------------------------------------------

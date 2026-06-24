@@ -64,6 +64,7 @@ from app.models import (
     Observation,
     ScopeItem,
     Severity,
+    TaskKind,
 )
 from app.models.api_key import APIKeyScope
 from app.orchestrator.llm import default_provider_model
@@ -1083,6 +1084,49 @@ def start_run(
         model_name=effective_model.name,
     )
 
+    # Stage 3+1: every worker run carries an MCP lease — the Stage 1.5
+    # local-execution fallback is gone. Direct-run prompts don't have a
+    # Task wrapping them, so we mint a "direct-run" lease keyed on the
+    # engagement + thread_id with the full non-exploit tool surface.
+    # The Strategic policy LLM isn't called here (no task to narrow); the
+    # analyst typed a freeform prompt so they get the full agent surface.
+    from app.core.config import settings
+    from app.orchestrator.tools import all_tools
+    from app.services import mcp_lease
+
+    allowed_tools = [
+        spec.name for spec in all_tools() if spec.kind != TaskKind.exploit
+    ]
+    scope_items_for_lease = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    lease = mcp_lease.mint_for_engagement(
+        session,
+        engagement_id=eng.id,
+        thread_id=thread_id,
+        allowed_tools=allowed_tools,
+        context={
+            "engagement": {
+                "slug": eng.slug,
+                "name": eng.name,
+                "description": eng.description,
+            },
+            "scope": [
+                {
+                    "kind": item.kind.value,
+                    "value": item.value,
+                    "is_exclusion": item.is_exclusion,
+                }
+                for item in scope_items_for_lease
+            ],
+            "direct_run": True,
+        },
+        prompt_keys=[],
+    )
+    mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp"
+
     # NB: we put ``acting_user_id`` on the envelope, NOT the decrypted key.
     # The worker re-resolves at run-time via UserProviderKey lookup. This
     # keeps plaintext API keys out of the Redis stream.
@@ -1098,6 +1142,8 @@ def start_run(
                     "name": effective_model.name,
                 },
                 "acting_user_id": str(user.id),
+                "mcp_url": mcp_url,
+                "lease_token": str(lease.id),
             }
         ),
     )

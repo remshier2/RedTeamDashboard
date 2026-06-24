@@ -44,10 +44,13 @@ class MCPLease(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid7
     )
-    task_id: Mapped[uuid.UUID] = mapped_column(
+    # Nullable: direct-run leases (analyst-typed prompt via POST /runs)
+    # mint a lease without a Task because there's no orchestrator-side
+    # planning step. Tactical-dispatched leases still always carry one.
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tasks.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     engagement_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

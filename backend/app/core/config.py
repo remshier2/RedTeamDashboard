@@ -17,9 +17,10 @@ class Settings(BaseSettings):
     public_base_url: str = "http://backend:8000"
 
     # API key the worker uses to authenticate to the MCP server when
-    # executing a leased task. Required for Stage 1.5 MCP execution.
-    # When blank, the worker falls back to local registry execution
-    # (legacy path). Provision once per deployment with a cli-scoped key.
+    # executing every run (Stage 3+1: the local-registry fallback was
+    # ripped). REQUIRED — the worker fails fast at boot if this is blank.
+    # Provision once per deployment with a cli-scoped key, stash in KV
+    # as ``worker-mcp-api-key``, surface as this env var.
     worker_mcp_api_key: str = ""
 
     # Stage 2 — isolated MCP via a secondary Azure Container App with

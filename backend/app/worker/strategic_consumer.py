@@ -196,8 +196,17 @@ class StrategicConsumer:
     def _release_lease_for_run(
         self, thread_id: uuid.UUID, *, reason: str
     ) -> None:
-        """Find the Task that this run dispatched (Task.run_id == thread_id)
-        and release any active lease tied to it. Idempotent."""
+        """Release the lease tied to this run on terminal events.
+
+        Two lookup paths because Stage 3+1 introduced direct-run leases
+        (no Task wrapping them):
+        - Tactical-dispatched runs: find the Task by run_id, then the
+          lease by task_id.
+        - Direct runs (POST /engagements/{slug}/runs): no Task; the lease
+          stashed ``thread_id`` in its ``context["_thread_id"]`` at mint
+          time, so we look it up there.
+
+        Idempotent — redelivered terminal events are safe."""
         from sqlalchemy import select
 
         from app.services import mcp_lease
@@ -207,18 +216,18 @@ class StrategicConsumer:
             task = session.execute(
                 select(Task).where(Task.run_id == thread_id)
             ).scalar_one_or_none()
-            if task is None:
-                # Run wasn't dispatched via Tactical (manual /runs endpoint,
-                # test envelope, etc.) — nothing to release.
-                return
-            active = mcp_lease.find_active_for_task(session, task.id)
+            active = (
+                mcp_lease.find_active_for_task(session, task.id)
+                if task is not None
+                else mcp_lease.find_active_for_thread(session, thread_id)
+            )
             if active is None:
                 return
             mcp_lease.release(session, lease_id=active.id, reason=reason)
             session.commit()
             logger.info(
                 "strategic.lease_released",
-                task_id=str(task.id),
+                task_id=str(task.id) if task is not None else None,
                 lease_id=str(active.id),
                 reason=reason,
             )
