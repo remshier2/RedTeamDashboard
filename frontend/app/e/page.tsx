@@ -27,6 +27,7 @@ import { CostsView } from "@/components/costs-view";
 import { GrantsCard } from "@/components/grants-card";
 import { RunPrompt } from "@/components/run-prompt";
 import { ScopeEditor } from "@/components/scope-editor";
+import { WorkflowTemplatesView } from "@/components/workflow-templates-view";
 import { archiveEngagement, downloadEngagementExport, getEngagement, listFindings } from "@/lib/api";
 import { subscribeToEvents } from "@/lib/events";
 import type { Engagement, Finding } from "@/lib/types";
@@ -292,6 +293,8 @@ function EngagementDetail({ slug }: { slug: string }) {
           {view === "entities" && <EntitiesView slug={slug} />}
 
           {view === "observations" && <ObservationsView slug={slug} />}
+
+          {view === "templates" && <WorkflowTemplatesView slug={slug} />}
 
           {view === "report" && (
             <ReportView slug={slug} />

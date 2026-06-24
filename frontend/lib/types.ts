@@ -134,6 +134,40 @@ export interface NessusImportResult {
   total_items: number;
 }
 
+// Phase 10 — workflow templates (starter packs).
+export interface WorkflowTemplateStep {
+  tool: string;
+  kind: string; // TaskKind value: "scan" | "enum" | "exploit"
+  owner_eligibility: string; // "agent" | "analyst" | "either"
+  title: string;
+  rationale?: string | null;
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  target_kind: string; // "domain" | "cidr" | "url" | "ip"
+  steps: WorkflowTemplateStep[];
+}
+
+export interface AppliedTask {
+  id: string;
+  title: string;
+  kind: string;
+  owner_eligibility: string;
+  status: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ApplyTemplateResponse {
+  template_id: string;
+  template_name: string;
+  target: string;
+  tasks: AppliedTask[];
+}
+
 // Attachment metadata (raw bytes fetched separately via GET /attachments/{id})
 export interface Attachment {
   id: string;

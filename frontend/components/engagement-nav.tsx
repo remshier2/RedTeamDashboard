@@ -3,6 +3,7 @@
 import {
   DollarSign,
   FileText,
+  LayoutTemplate,
   ListChecks,
   MessageSquare,
   Network,
@@ -15,6 +16,7 @@ export type EngagementView =
   | "findings"
   | "entities"
   | "observations"
+  | "templates"
   | "report"
   | "costs"
   | "scope";
@@ -23,6 +25,7 @@ const ITEMS: { view: EngagementView; label: string; Icon: LucideIcon }[] = [
   { view: "findings", label: "Findings", Icon: ListChecks },
   { view: "entities", label: "Entities", Icon: Network },
   { view: "observations", label: "Observations", Icon: MessageSquare },
+  { view: "templates", label: "Templates", Icon: LayoutTemplate },
   { view: "report", label: "Report", Icon: FileText },
   { view: "costs", label: "Costs", Icon: DollarSign },
   { view: "scope", label: "Scope", Icon: Target },

@@ -431,6 +431,32 @@ export async function importFindingsNessus(
   return response.json() as Promise<import("@/lib/types").NessusImportResult>;
 }
 
+// ---------------------------------------------------------------------------
+// Workflow templates (Phase 10 starter packs)
+// ---------------------------------------------------------------------------
+
+export function listWorkflowTemplates(): Promise<
+  import("@/lib/types").WorkflowTemplate[]
+> {
+  return request<import("@/lib/types").WorkflowTemplate[]>(
+    "/workflow-templates",
+  );
+}
+
+export function applyWorkflowTemplate(
+  slug: string,
+  templateId: string,
+  target: string,
+): Promise<import("@/lib/types").ApplyTemplateResponse> {
+  return request<import("@/lib/types").ApplyTemplateResponse>(
+    `/engagements/${slug}/templates/${templateId}/apply`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    },
+  );
+}
+
 export function updateFinding(
   findingId: string,
   body: {

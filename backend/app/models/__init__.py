@@ -26,6 +26,7 @@ from app.models.suggestion import (
 from app.models.task import OwnerEligibility, Task, TaskKind, TaskStatus
 from app.models.user import User
 from app.models.user_provider_key import ProviderKeyKind, UserProviderKey
+from app.models.workflow_template import WorkflowTemplate
 
 __all__ = [
     "APIKey",
@@ -62,5 +63,6 @@ __all__ = [
     "TaskStatus",
     "User",
     "UserProviderKey",
+    "WorkflowTemplate",
     "scope_satisfies",
 ]
