@@ -108,7 +108,24 @@ class TacticalAgent:
         from app.core.config import settings
 
         lease = StrategicAgent().provision_lease(session, task=task)
-        mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp"
+
+        # Stage 2 routing: when Strategic marked the lease as needing an
+        # isolated MCP host AND the deployment has provisioned a secondary
+        # scale-to-zero MCP App, point the worker there. Otherwise use the
+        # colocated MCP server in the backend container. The local-dev
+        # default (``aca_mcp_app_enabled=False``) collapses both paths to
+        # colocated so we don't fork the local stack for an Azure-only
+        # feature.
+        if (
+            lease.requires_container
+            and settings.aca_mcp_app_enabled
+            and settings.aca_mcp_url
+        ):
+            mcp_url = f"{settings.aca_mcp_url.rstrip('/')}/mcp"
+            mcp_host = "container"
+        else:
+            mcp_url = f"{settings.public_base_url.rstrip('/')}/mcp"
+            mcp_host = "colocated"
 
         store_run_model(
             self._redis,
@@ -159,6 +176,8 @@ class TacticalAgent:
             tool=tool_name,
             target=target,
             thread_id=str(thread_id),
+            mcp_host=mcp_host,
+            lease_requires_container=lease.requires_container,
         )
 
         return thread_id

@@ -22,6 +22,20 @@ class Settings(BaseSettings):
     # (legacy path). Provision once per deployment with a cli-scoped key.
     worker_mcp_api_key: str = ""
 
+    # Stage 2 — isolated MCP via a secondary Azure Container App with
+    # scale-to-zero. ACA Jobs don't accept HTTP ingress, so the ephemeral
+    # MCP host is a second Container App provisioned alongside the main
+    # one: ingress on /mcp, scale 0..1, idle = $0. When the column
+    # ``mcp_leases.requires_container`` is True, Tactical stamps this
+    # App's URL on the worker envelope instead of the colocated one. When
+    # ``aca_mcp_app_enabled`` is False (the default — and forced in
+    # local-dev), every lease falls back to colocated regardless.
+    aca_mcp_app_enabled: bool = False
+    # FQDN of the secondary MCP App, populated by deploy from the Bicep
+    # output. Example: "https://rtd-mcp.<env>.azurecontainerapps.io".
+    # Tactical appends ``/mcp`` itself.
+    aca_mcp_url: str = ""
+
     # CORS allow-origins for the browser viewer. Defaults cover local dev.
     # Kit deploys override this with the central viewer's origin (Phase 6)
     # so a browser there can call this tenant's API directly.

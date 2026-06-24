@@ -317,6 +317,10 @@ Both modes write findings to the same database. The viewer shows results from ei
 
 **Worker MCP key (Stage 1.5):** when the worker dispatches a leased task, it calls the MCP server over SSE using `WORKER_MCP_API_KEY` + the per-task `X-Lease-Token`. The lease validates server-side and gates the tool surface to the lease's `allowed_tools`. Mint a `cli`-scoped key once per deployment and set it in env (Bicep: read from Key Vault secret `worker-mcp-api-key`). When blank, the worker falls back to local-registry execution — same behavior, no MCP round-trip.
 
+**Isolated MCP host (Stage 2):** the deploy kit also provisions a second Container App, `rtd-<env>-mcp`, running the MCP server in isolation from backend/worker. Its ingress runs the same `/mcp` path as the colocated one, but the App scales 0..1 — idle = $0, ramps to 1 on first request. When `mcp_leases.requires_container=True` AND `ACA_MCP_APP_ENABLED=true` AND `ACA_MCP_URL` is populated, Tactical stamps the secondary App's URL onto the worker envelope; otherwise the run uses the colocated path.
+
+Strategic currently sets `requires_container=False` for every lease (conservative default). Flip it per-call by passing `requires_container=True` to `StrategicAgent.provision_lease(...)`, or wait for Stage 3 where the column will be LLM-driven by `task.kind` + scope + risk. Local-dev keeps `ACA_MCP_APP_ENABLED=false` so the compose stack stays a single MCP — the column is set, but never routes anywhere different.
+
 ## Engagement lifecycle
 
 Engagements move through three states: **active → archived → flushed**.

@@ -144,3 +144,140 @@ def test_strategic_release_lease_is_idempotent(
     db.commit()
     db.refresh(lease)
     assert lease.released_at == first_released_at
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — requires_container + Tactical routing
+# ---------------------------------------------------------------------------
+
+
+def test_strategic_default_policy_provisions_requires_container_false(
+    db: Session, engagement: Engagement
+) -> None:
+    """Conservative default: leases mint with requires_container=False
+    so every dispatch keeps the colocated path until Stage 3 LLM-driven
+    policy ships."""
+    task = _make_enum_task(db, engagement)
+    lease = StrategicAgent().provision_lease(db, task=task)
+    db.commit()
+    assert lease.requires_container is False
+
+
+def test_strategic_provision_lease_honours_explicit_requires_container(
+    db: Session, engagement: Engagement
+) -> None:
+    """The kwarg override lets callers (and tests) flip the column without
+    waiting for the LLM policy."""
+    task = _make_enum_task(db, engagement)
+    lease = StrategicAgent().provision_lease(
+        db, task=task, requires_container=True
+    )
+    db.commit()
+    assert lease.requires_container is True
+
+
+def test_tactical_routes_to_colocated_when_aca_disabled(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with requires_container=True, ``aca_mcp_app_enabled=False``
+    (the default — and the forced local-dev posture) collapses every
+    lease to the colocated /mcp on the backend App."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "aca_mcp_app_enabled", False)
+    monkeypatch.setattr(
+        settings, "aca_mcp_url", "https://rtd-mcp.example.azurecontainerapps.io"
+    )
+    monkeypatch.setattr(settings, "public_base_url", "http://backend:8000")
+
+    task = _make_enum_task(db, engagement)
+    # Force the lease into container mode so we know it's the setting, not
+    # the column, that's gating the route.
+    monkeypatch.setattr(
+        StrategicAgent, "_decide_requires_container", lambda self, t: True
+    )
+
+    redis = _FakeRedis()
+    TacticalAgent(redis).dispatch(db, task=task)
+    db.commit()
+
+    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    assert envelope["mcp_url"] == "http://backend:8000/mcp"
+
+
+def test_tactical_routes_to_colocated_when_lease_does_not_require_container(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setting on, lease off → still colocated. The lease column is the
+    per-task switch; the setting is the deployment-level guard."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "aca_mcp_app_enabled", True)
+    monkeypatch.setattr(
+        settings, "aca_mcp_url", "https://rtd-mcp.example.azurecontainerapps.io"
+    )
+    monkeypatch.setattr(settings, "public_base_url", "http://backend:8000")
+
+    task = _make_enum_task(db, engagement)
+    # Default Strategic policy returns False — no override.
+
+    redis = _FakeRedis()
+    TacticalAgent(redis).dispatch(db, task=task)
+    db.commit()
+
+    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    assert envelope["mcp_url"] == "http://backend:8000/mcp"
+
+
+def test_tactical_routes_to_aca_mcp_when_lease_and_settings_agree(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both gates pass → Tactical stamps the secondary App's URL."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "aca_mcp_app_enabled", True)
+    monkeypatch.setattr(
+        settings, "aca_mcp_url", "https://rtd-mcp.example.azurecontainerapps.io"
+    )
+    monkeypatch.setattr(settings, "public_base_url", "http://backend:8000")
+    monkeypatch.setattr(
+        StrategicAgent, "_decide_requires_container", lambda self, t: True
+    )
+
+    task = _make_enum_task(db, engagement)
+    redis = _FakeRedis()
+    TacticalAgent(redis).dispatch(db, task=task)
+    db.commit()
+
+    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    assert (
+        envelope["mcp_url"]
+        == "https://rtd-mcp.example.azurecontainerapps.io/mcp"
+    )
+    # Lease persisted with the container flag set.
+    lease = mcp_lease.validate_token(db, envelope["lease_token"])
+    assert lease is not None
+    assert lease.requires_container is True
+
+
+def test_tactical_routes_to_colocated_when_aca_url_blank(
+    db: Session, engagement: Engagement, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setting on but URL unset (mid-deploy state) → fall back rather than
+    stamp a broken URL onto the envelope."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "aca_mcp_app_enabled", True)
+    monkeypatch.setattr(settings, "aca_mcp_url", "")
+    monkeypatch.setattr(settings, "public_base_url", "http://backend:8000")
+    monkeypatch.setattr(
+        StrategicAgent, "_decide_requires_container", lambda self, t: True
+    )
+
+    task = _make_enum_task(db, engagement)
+    redis = _FakeRedis()
+    TacticalAgent(redis).dispatch(db, task=task)
+    db.commit()
+
+    envelope = json.loads(redis.xadd_calls[0][1]["data"])
+    assert envelope["mcp_url"] == "http://backend:8000/mcp"

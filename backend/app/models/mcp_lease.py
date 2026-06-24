@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,4 +70,11 @@ class MCPLease(Base):
     )
     released_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Stage 2: when True, Tactical provisions an ephemeral Azure Container
+    # Apps Job to host the MCP server for this run instead of using the
+    # colocated server. Strategic decides; default False so the rollout is
+    # opt-in until LLM-driven policy lands in Stage 3.
+    requires_container: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )

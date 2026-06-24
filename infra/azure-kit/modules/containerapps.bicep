@@ -47,6 +47,12 @@ param appInsightsConnectionString string = ''
 @description('Storage account name for engagement exports (archive/flush lifecycle). Empty → blob export disabled.')
 param storageAccountName string = ''
 
+@description('Stage 2 — base URL of the secondary MCP App (mcp_app.bicep). When acaMcpAppEnabled, Tactical stamps this onto worker envelopes for leases with requires_container=True.')
+param acaMcpUrl string = ''
+
+@description('Stage 2 — when true, leases with requires_container=True route to acaMcpUrl. False (the default) collapses every lease to the colocated /mcp on this App.')
+param acaMcpAppEnabled bool = false
+
 // ---------------------------------------------------------------------------
 // Role assignment IDs
 // ---------------------------------------------------------------------------
@@ -110,6 +116,8 @@ var appEnv = [
   { name: 'ENTRA_CLIENT_ID', value: entraClientId }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
   { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
+  { name: 'ACA_MCP_URL', value: acaMcpUrl }
+  { name: 'ACA_MCP_APP_ENABLED', value: string(acaMcpAppEnabled) }
 ]
 
 // ---------------------------------------------------------------------------

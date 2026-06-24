@@ -33,8 +33,14 @@ def mint(
     context: dict[str, Any],
     prompt_keys: list[str],
     ttl_seconds: int = 3600,
+    requires_container: bool = False,
 ) -> MCPLease:
-    """Create a new active lease for ``task``. Caller commits."""
+    """Create a new active lease for ``task``. Caller commits.
+
+    ``requires_container`` opts into Stage 2 ephemeral MCP hosting for
+    this lease — Tactical reads the column to decide whether to provision
+    an Azure Container Apps Job per dispatch or use the colocated MCP.
+    """
     now = datetime.now(tz=UTC)
     lease = MCPLease(
         task_id=task.id,
@@ -45,6 +51,7 @@ def mint(
         status=MCPLeaseStatus.active.value,
         created_at=now,
         expires_at=now + timedelta(seconds=ttl_seconds),
+        requires_container=requires_container,
     )
     session.add(lease)
     session.flush()
@@ -55,6 +62,7 @@ def mint(
         engagement_id=str(task.engagement_id),
         tools=allowed_tools,
         ttl_seconds=ttl_seconds,
+        requires_container=requires_container,
     )
     return lease
 

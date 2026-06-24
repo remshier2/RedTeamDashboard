@@ -208,6 +208,26 @@ module viewer 'modules/viewer.bicep' = {
 var backendImage = 'ghcr.io/${imageRepoOwner}/rtd-backend:${imageTag}'
 var workerImage = 'ghcr.io/${imageRepoOwner}/rtd-worker:${imageTag}'
 
+// Stage 2 — secondary MCP App with scale-to-zero. Lives in the same env
+// so internal DNS just works; ingress is external so the worker can
+// reach it via HTTPS the same way it reaches the colocated /mcp. The
+// main App below picks up its URL via the ACA_MCP_URL env var so
+// Tactical can route ``lease.requires_container=True`` runs there.
+module mcpApp 'modules/mcp_app.bicep' = {
+  name: 'mcpApp'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    environmentId: caenv.outputs.id
+    keyVaultName: kv.outputs.name
+    keyVaultId: kv.outputs.id
+    backendImage: backendImage
+    appInsightsConnectionString: ai.outputs.connectionString
+  }
+}
+
 module apps 'modules/containerapps.bicep' = {
   name: 'containerapps'
   scope: rg
@@ -227,6 +247,8 @@ module apps 'modules/containerapps.bicep' = {
     entraClientId: entraClientId
     appInsightsConnectionString: ai.outputs.connectionString
     storageAccountName: storage.outputs.storageAccountName
+    acaMcpUrl: mcpApp.outputs.appUrl
+    acaMcpAppEnabled: true
   }
 }
 
@@ -265,3 +287,6 @@ output viewerName string = viewer.outputs.name
 output viewerUrl string = viewer.outputs.url
 output appInsightsName string = ai.outputs.name
 output storageAccountName string = storage.outputs.storageAccountName
+output mcpAppName string = mcpApp.outputs.appName
+output mcpAppFqdn string = mcpApp.outputs.appFqdn
+output mcpAppUrl string = mcpApp.outputs.appUrl

@@ -396,16 +396,24 @@ class StrategicAgent:
         *,
         task: Any,
         ttl_seconds: int = 3600,
+        requires_container: bool | None = None,
     ) -> Any:
         """Stage 1 of per-task MCP composition: Strategic curates the
         tool/context/prompt surface for one Execution Agent run via tool
         packs keyed by ``task.kind``, then mints an active lease record.
         The lease's id is the bearer token Tactical stamps on the worker
         envelope. Caller commits the session.
+
+        Stage 2 adds ``requires_container`` — when True (decided by
+        ``_decide_requires_container`` unless overridden), Tactical
+        provisions an ephemeral ACA Job to host the MCP for this run.
         """
         # Local import keeps the orchestrator HTTP module from pulling the
         # lease service in at import time.
         from app.services import mcp_lease, tool_packs
+
+        if requires_container is None:
+            requires_container = self._decide_requires_container(task)
 
         return mcp_lease.mint(
             session,
@@ -414,7 +422,18 @@ class StrategicAgent:
             context=tool_packs.context_for_task(session, task),
             prompt_keys=tool_packs.prompts_for_task(task),
             ttl_seconds=ttl_seconds,
+            requires_container=requires_container,
         )
+
+    def _decide_requires_container(self, task: Any) -> bool:
+        """Conservative default policy: never request a container.
+
+        Stage 2 ships the wiring; Stage 3 will replace this with an
+        LLM-driven decision keyed on ``task.kind`` + scope + risk. Until
+        then, every lease takes the colocated MCP path — the column is
+        opt-in via explicit override on ``provision_lease``.
+        """
+        return False
 
     def release_lease(
         self,
