@@ -323,6 +323,8 @@ Both modes write findings to the same database. The viewer shows results from ei
 
 **Lease sweeper:** the worker runs a daemon thread that calls `mcp_lease.sweep_expired()` every `LEASE_SWEEP_INTERVAL` seconds (default 300s) to flip active leases past their `expires_at` to `status=expired`. Per-request `validate_token` already rejects expired leases at the MCP server, so this is purely for accounting cleanliness — the Costs UI and lease-state queries don't accumulate stale "active" rows. Failures on a single tick are logged and swallowed; the next tick gets a fresh shot.
 
+**Nessus import (Phase 10):** Tenable Nessus is a "heavy tool" per charter §16 RESOLVED — import-first, not agent-driven. Analysts run scans on their own infra and `POST /engagements/{slug}/findings/import/nessus` the `.nessus` v2 XML export (multipart `file=`). Each ReportItem becomes a Finding with `phase=vuln_scan`, `source_tool="nessus_import"`, `status=pending_validation` (Phase 8 validation gate applies). Severity maps 0→info, 1→low, 2→medium, 3→high, 4→critical. By default Severity=Info findings are skipped (`?include_info=true` opts in); out-of-scope hosts are dropped silently and counted on the response. Uses `defusedxml` for XXE/billion-laughs safety.
+
 ## Engagement lifecycle
 
 Engagements move through three states: **active → archived → flushed**.

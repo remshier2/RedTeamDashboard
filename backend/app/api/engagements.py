@@ -24,7 +24,8 @@ Endpoints::
     POST   /engagements/{slug}/observations              -> create observation
     DELETE /observations/{observation_id}                -> delete observation
 
-    POST   /engagements/{slug}/findings/import           -> bulk import findings
+    POST   /engagements/{slug}/findings/import           -> bulk import findings (JSON/CSV)
+    POST   /engagements/{slug}/findings/import/nessus    -> import Nessus .nessus v2 XML
     PATCH  /findings/{finding_id}                        -> update title/summary/severity/phase
     GET    /engagements/{slug}/export                    -> full JSON snapshot
 
@@ -763,6 +764,68 @@ class FindingImport(BaseModel):
     details: dict[str, Any] = {}
 
 
+class NessusImportResult(BaseModel):
+    """Response shape for the .nessus XML importer.
+
+    ``total_items`` is every ReportItem the parser saw; ``imported`` is
+    the subset that survived the Info filter + scope filter and now has
+    a Finding row. The ``skipped_*`` counters let the analyst sanity-
+    check the filters dropped what they expected.
+    """
+
+    imported: list[FindingRead]
+    skipped_info: int
+    skipped_out_of_scope: int
+    total_items: int
+
+
+def _create_findings_from_imports(
+    session: Any,
+    eng: Engagement,
+    items: list[Any],
+    user: Any,
+    *,
+    source: str,
+) -> list[Finding]:
+    """Persist a list of import-shaped items as Findings + write the audit row.
+
+    ``items`` is duck-typed: each must expose ``title``, ``severity``,
+    ``phase``, ``summary``, ``target``, ``source_tool``, ``details``.
+    Both ``FindingImport`` (Phase 11 JSON/CSV importer) and
+    ``nessus_import.ParsedItem`` (Phase 10 .nessus parser) satisfy this.
+
+    All imports land ``status=pending_validation`` per the Phase 8
+    validation gate — analyst must approve before they're report-eligible.
+    Caller commits the session.
+    """
+    created: list[Finding] = []
+    for item in items:
+        f = Finding(
+            engagement_id=eng.id,
+            title=item.title,
+            severity=item.severity,
+            phase=item.phase,
+            summary=item.summary,
+            target=item.target,
+            source_tool=item.source_tool or "import",
+            details=item.details,
+            status=FindingStatus.pending_validation,
+        )
+        session.add(f)
+        created.append(f)
+    if created:
+        session.add(
+            AuditLog(
+                engagement_id=eng.id,
+                actor_type=ActorType.user,
+                actor_id=str(user.id),
+                event_type="findings.imported",
+                payload={"count": len(created), "source": source},
+            )
+        )
+    return created
+
+
 @router.post(
     "/engagements/{slug}/findings/import",
     response_model=list[FindingRead],
@@ -786,35 +849,68 @@ def import_findings(
     eng = _get_engagement_or_404(session, slug)
     _reject_flushed(eng)
 
-    created: list[Finding] = []
-    for item in body:
-        f = Finding(
-            engagement_id=eng.id,
-            title=item.title,
-            severity=item.severity,
-            phase=item.phase,
-            summary=item.summary,
-            target=item.target,
-            source_tool=item.source_tool or "import",
-            details=item.details,
-            status=FindingStatus.pending_validation,
-        )
-        session.add(f)
-        created.append(f)
-
-    session.add(
-        AuditLog(
-            engagement_id=eng.id,
-            actor_type=ActorType.user,
-            actor_id=str(user.id),
-            event_type="findings.imported",
-            payload={"count": len(created), "source": "bulk_import"},
-        )
+    created = _create_findings_from_imports(
+        session, eng, body, user, source="bulk_import"
     )
     session.commit()
     for f in created:
         session.refresh(f)
     return [_finding_to_read(f) for f in created]
+
+
+@router.post(
+    "/engagements/{slug}/findings/import/nessus",
+    response_model=NessusImportResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def import_nessus(
+    slug: str,
+    session: DbSession,
+    user: CurrentUser,
+    file: Annotated[UploadFile, File(..., description="Nessus .nessus v2 XML export.")],
+    include_info: Annotated[
+        bool,
+        Query(description="Import Severity=Info findings. Default False."),
+    ] = False,
+) -> dict[str, Any]:
+    """Import a Tenable Nessus .nessus v2 XML export.
+
+    Each ReportItem becomes a Finding with ``phase=vuln_scan`` and
+    ``status=pending_validation`` (analyst must approve before report).
+    ``include_info=true`` opts in to Severity=Info rows; default off.
+    Out-of-scope hosts are dropped silently and counted on the response.
+    """
+    from app.services.nessus_import import parse_nessus_xml
+
+    eng = _get_engagement_or_404(session, slug)
+    _reject_flushed(eng)
+
+    raw = file.file.read()
+    scope_items = list(
+        session.execute(
+            select(ScopeItem).where(ScopeItem.engagement_id == eng.id)
+        ).scalars()
+    )
+    try:
+        result = parse_nessus_xml(
+            raw, include_info=include_info, scope_items=scope_items
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created = _create_findings_from_imports(
+        session, eng, result.items, user, source="nessus_import"
+    )
+    session.commit()
+    for f in created:
+        session.refresh(f)
+
+    return {
+        "imported": [_finding_to_read(f) for f in created],
+        "skipped_info": result.skipped_info,
+        "skipped_out_of_scope": result.skipped_out_of_scope,
+        "total_items": result.total_items,
+    }
 
 
 # ---------------------------------------------------------------------------
