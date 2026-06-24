@@ -125,6 +125,15 @@ export interface FindingImport {
   details?: Record<string, unknown>;
 }
 
+// Response shape for POST /engagements/{slug}/findings/import/nessus
+// (Phase 10 — .nessus v2 XML upload).
+export interface NessusImportResult {
+  imported: Finding[];
+  skipped_info: number;
+  skipped_out_of_scope: number;
+  total_items: number;
+}
+
 // Attachment metadata (raw bytes fetched separately via GET /attachments/{id})
 export interface Attachment {
   id: string;

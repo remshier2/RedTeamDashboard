@@ -399,6 +399,38 @@ export function importFindings(
   });
 }
 
+/**
+ * Upload a Tenable Nessus .nessus v2 XML export. The backend parser
+ * walks ReportItems and persists each as a Finding(status=pending_validation).
+ *
+ * Uses FormData directly instead of the JSON ``request()`` helper because
+ * the browser MUST set the multipart Content-Type with its own boundary;
+ * fetch handles that automatically when ``body`` is a FormData and no
+ * Content-Type header is set on the request.
+ */
+export async function importFindingsNessus(
+  slug: string,
+  file: File,
+  includeInfo: boolean = false,
+): Promise<import("@/lib/types").NessusImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const q = includeInfo ? "?include_info=true" : "";
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${slug}/findings/import/nessus${q}`,
+    {
+      method: "POST",
+      body: form,
+      headers: { ...(await authHeaders()) },
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<import("@/lib/types").NessusImportResult>;
+}
+
 export function updateFinding(
   findingId: string,
   body: {
