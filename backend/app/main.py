@@ -29,6 +29,7 @@ from app.api.approvals import router as approvals_router
 from app.api.authorizations import router as authorizations_router
 from app.api.deps import AsyncRedisClient, DbSession
 from app.api.engagements import router as engagements_router
+from app.api.entities import router as entities_router
 from app.api.events import router as events_router
 from app.api.orchestrator import router as orchestrator_router
 from app.api.provider_keys import router as provider_keys_router
@@ -93,6 +94,7 @@ app.include_router(orchestrator_router)
 app.include_router(provider_keys_router)
 app.include_router(reports_router)
 app.include_router(workflow_templates_router)
+app.include_router(entities_router)
 
 # MCP server — auth-gated SSE endpoint for agent clients (Claude Code, etc.)
 # Agents connect via: claude mcp add rtd --transport sse --url https://<fqdn>/mcp/sse

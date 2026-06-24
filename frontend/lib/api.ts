@@ -432,6 +432,46 @@ export async function importFindingsNessus(
 }
 
 // ---------------------------------------------------------------------------
+// Stored entities (Phase 10 Maltego import target)
+// ---------------------------------------------------------------------------
+
+export function listStoredEntities(
+  slug: string,
+): Promise<import("@/lib/types").StoredEntity[]> {
+  return request<import("@/lib/types").StoredEntity[]>(
+    `/engagements/${slug}/entities/stored`,
+  );
+}
+
+/**
+ * Upload a Maltego .mtgx graph export. The backend parses the zip-of-GraphML
+ * server-side and UPSERTs each MaltegoEntity into the entities table.
+ *
+ * Same FormData multipart pattern as importFindingsNessus — fetch sets the
+ * boundary itself, we must NOT override Content-Type.
+ */
+export async function importEntitiesMaltego(
+  slug: string,
+  file: File,
+): Promise<import("@/lib/types").MaltegoImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(
+    `${API_BASE_URL}/engagements/${slug}/entities/import/maltego`,
+    {
+      method: "POST",
+      body: form,
+      headers: { ...(await authHeaders()) },
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<import("@/lib/types").MaltegoImportResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Workflow templates (Phase 10 starter packs)
 // ---------------------------------------------------------------------------
 

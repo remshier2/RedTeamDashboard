@@ -134,6 +134,28 @@ export interface NessusImportResult {
   total_items: number;
 }
 
+// Phase 10 — stored entities (Maltego import target + future sources).
+// Complements the existing derived-from-findings Entity (above).
+export interface StoredEntity {
+  id: string;
+  type: string;
+  value: string;
+  properties: Record<string, unknown>;
+  source_tool: string;
+  source_attribution: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MaltegoImportResult {
+  inserted: number;
+  merged: number;
+  skipped_empty: number;
+  skipped_unknown: number;
+  total_nodes: number;
+  entities: StoredEntity[];
+}
+
 // Phase 10 — workflow templates (starter packs).
 export interface WorkflowTemplateStep {
   tool: string;

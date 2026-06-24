@@ -1,12 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Search, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Search, Upload, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { listEntities } from "@/lib/api";
+import {
+  importEntitiesMaltego,
+  listEntities,
+  listStoredEntities,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Entity, Severity } from "@/lib/types";
+import type {
+  Entity,
+  MaltegoImportResult,
+  Severity,
+  StoredEntity,
+} from "@/lib/types";
 
 const SEVERITY_RANK: Record<Severity, number> = {
   critical: 4,
@@ -39,7 +49,9 @@ function typeLabel(t: string): string {
 }
 
 // CHARTER Idea 4: entities correlated across the engagement's findings —
-// searchable, filterable by type, clickable into provenance.
+// searchable, filterable by type, clickable into provenance. Phase 10 adds
+// an "Imported" section above the derived list for entities that landed
+// from external sources (Maltego today, future Dehashed etc.).
 export function EntitiesView({ slug }: { slug: string }) {
   const [entities, setEntities] = useState<Entity[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +75,12 @@ export function EntitiesView({ slug }: { slug: string }) {
 
   if (error) return <p className="text-sm text-critical">{error}</p>;
   if (entities === null)
-    return <p className="text-sm text-muted-foreground">Loading entities…</p>;
+    return (
+      <div className="space-y-5">
+        <ImportedEntitiesSection slug={slug} />
+        <p className="text-sm text-muted-foreground">Loading entities…</p>
+      </div>
+    );
 
   const types = ["all", ...Array.from(new Set(entities.map((e) => e.type)))];
   const q = search.trim().toLowerCase();
@@ -77,7 +94,17 @@ export function EntitiesView({ slug }: { slug: string }) {
     );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
+      <ImportedEntitiesSection slug={slug} />
+
+      <div className="space-y-1">
+        <h2 className="text-base font-medium">Derived from findings</h2>
+        <p className="text-xs text-muted-foreground">
+          Extracted on the fly from <code className="font-mono">Finding.target</code>{" "}
+          and <code className="font-mono">Finding.details</code>.
+        </p>
+      </div>
+
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -157,6 +184,149 @@ export function EntitiesView({ slug }: { slug: string }) {
     </div>
   );
 }
+
+// ───── Imported entities section (Maltego today, future Dehashed etc.) ─────
+
+function ImportedEntitiesSection({ slug }: { slug: string }) {
+  const [items, setItems] = useState<StoredEntity[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastResult, setLastResult] = useState<MaltegoImportResult | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setLoadError(null);
+      setItems(await listStoredEntities(slug));
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }, [slug]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const result = await importEntitiesMaltego(slug, file);
+      setLastResult(result);
+      setItems(result.entities);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-medium">Imported</h2>
+          <p className="text-xs text-muted-foreground">
+            Persistent entities from external sources (Maltego .mtgx today;
+            Dehashed and others later). Re-imports merge into existing rows.
+          </p>
+        </div>
+        <div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+          >
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            {uploading ? "Importing…" : "Import .mtgx"}
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".mtgx,application/zip"
+            className="hidden"
+            onChange={onFile}
+          />
+        </div>
+      </div>
+
+      {lastResult && (
+        <div className="rounded border border-border bg-background p-2 text-xs">
+          <div className="font-medium">
+            <span className="font-mono">{lastResult.inserted}</span> inserted,{" "}
+            <span className="font-mono">{lastResult.merged}</span> merged
+            <span className="text-muted-foreground">
+              {" "}
+              ({lastResult.total_nodes} node
+              {lastResult.total_nodes === 1 ? "" : "s"} in graph)
+            </span>
+          </div>
+          {(lastResult.skipped_empty > 0 ||
+            lastResult.skipped_unknown > 0) && (
+            <div className="text-muted-foreground">
+              Skipped:{" "}
+              <span className="font-mono">{lastResult.skipped_empty}</span> empty
+              · <span className="font-mono">{lastResult.skipped_unknown}</span>{" "}
+              unknown
+            </div>
+          )}
+        </div>
+      )}
+
+      {uploadError && (
+        <p className="text-xs text-critical">{uploadError}</p>
+      )}
+      {loadError && <p className="text-xs text-critical">{loadError}</p>}
+
+      {items === null ? (
+        <p className="text-sm text-muted-foreground">
+          Loading imported entities…
+        </p>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No imported entities yet — upload a Maltego .mtgx to populate.
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="px-3 py-2 w-28">Type</th>
+                <th className="px-3 py-2">Value</th>
+                <th className="px-3 py-2 w-40">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((e) => (
+                <tr
+                  key={e.id}
+                  className="border-b border-border/60 last:border-0"
+                >
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                    {typeLabel(e.type)}
+                  </td>
+                  <td className="break-all px-3 py-2.5 font-mono text-xs">
+                    {e.value}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">
+                    {e.source_attribution ?? e.source_tool}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 
 function EntitySlideOver({
   entity,
