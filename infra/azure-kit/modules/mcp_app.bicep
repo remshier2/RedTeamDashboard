@@ -30,6 +30,10 @@ param environmentId string
 param keyVaultName string
 param keyVaultId string
 
+// ACR login server and resource ID. Pull uses this app's system-assigned identity.
+param acrLoginServer string
+param acrId string
+
 // Reuses the same image as backend/worker; only the command differs.
 param backendImage string
 
@@ -41,6 +45,7 @@ param appInsightsConnectionString string = ''
 // ---------------------------------------------------------------------------
 
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 // ---------------------------------------------------------------------------
 // Secret refs + env
@@ -85,6 +90,12 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         allowInsecure: false
       }
       secrets: secretsFromKeyVault
+      registries: [
+        {
+          server: acrLoginServer
+          identity: 'system'
+        }
+      ]
     }
     template: {
       containers: [
@@ -120,6 +131,20 @@ resource appKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: app.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+  }
+}
+
+resource acrRef 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: last(split(acrId, '/'))
+}
+
+resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acrId, app.id, 'AcrPull')
+  scope: acrRef
+  properties: {
+    principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
   }
 }
 

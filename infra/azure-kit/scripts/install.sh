@@ -30,8 +30,7 @@ set -euo pipefail
 
 ENV_NAME="prod"
 LOCATION="eastus2"
-IMAGE_REPO_OWNER="donpercival0x45"
-IMAGE_TAG="latest"
+IMAGE_TAG="main"
 LLM_PROVIDER="anthropic"
 PG_PW=""
 ENTRA_TENANT_ID=""
@@ -47,8 +46,7 @@ Usage: $0 [options]
 Options:
   --env NAME              Short env name; used in every resource name (default: prod)
   --location REGION       Azure region (default: eastus2)
-  --image-repo-owner OWNER GHCR owner where rtd-{backend,worker} are published (default: donpercival0x45)
-  --image-tag TAG         Image tag to deploy (default: latest)
+  --image-tag TAG         Image tag to deploy on initial install (default: main)
   --llm-provider P        anthropic | openai | azure (default: anthropic)
   --postgres-password PW  Provide the postgres password; otherwise one is generated.
   --anthropic-key KEY     Anthropic API key to store in Key Vault. Falls back to
@@ -68,7 +66,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --env)               ENV_NAME="$2";         shift 2 ;;
         --location)          LOCATION="$2";          shift 2 ;;
-        --image-repo-owner)  IMAGE_REPO_OWNER="$2";  shift 2 ;;
         --image-tag)         IMAGE_TAG="$2";          shift 2 ;;
         --llm-provider)      LLM_PROVIDER="$2";       shift 2 ;;
         --postgres-password) PG_PW="$2";              shift 2 ;;
@@ -131,7 +128,7 @@ echo "    Subscription: $SUB_NAME"
 echo "    Tenant:       $TENANT_ID"
 echo "    Region:       $LOCATION"
 echo "    Resource group: $RG_NAME"
-echo "    Image:        ghcr.io/$IMAGE_REPO_OWNER/rtd-{backend,worker}:$IMAGE_TAG"
+echo "    Image tag:    $IMAGE_TAG (initial; future deploys via ACR Task)"
 echo "    LLM provider: $LLM_PROVIDER"
 echo
 
@@ -164,8 +161,6 @@ fi
 
 bold "[3/7] Running Bicep deploy '$DEPLOY_NAME'… (5-10 minutes for first run)"
 
-GHCR_IMAGE_TAG="${IMAGE_TAG#v}"
-
 az deployment sub create \
     --name "$DEPLOY_NAME" \
     --location "$LOCATION" \
@@ -173,8 +168,7 @@ az deployment sub create \
     --parameters env="$ENV_NAME" \
     --parameters location="$LOCATION" \
     --parameters postgresAdminPassword="$PG_PW" \
-    --parameters imageRepoOwner="$IMAGE_REPO_OWNER" \
-    --parameters imageTag="$GHCR_IMAGE_TAG" \
+    --parameters imageTag="${IMAGE_TAG#v}" \
     --parameters llmProvider="$LLM_PROVIDER" \
     --parameters entraTenantId="$ENTRA_TENANT_ID" \
     --parameters entraClientId="$ENTRA_CLIENT_ID" \
@@ -190,6 +184,7 @@ bold "[4/7] Capturing deployment outputs…"
 OUTPUTS="$(az deployment sub show -n "$DEPLOY_NAME" --query properties.outputs -o json)"
 
 RG_OUT="$(echo "$OUTPUTS"     | python3 -c 'import sys,json;print(json.load(sys.stdin)["resourceGroupName"]["value"])')"
+ACR_NAME="$(echo "$OUTPUTS"   | python3 -c 'import sys,json;print(json.load(sys.stdin)["acrName"]["value"])')"
 APP_FQDN="$(echo "$OUTPUTS"   | python3 -c 'import sys,json;print(json.load(sys.stdin)["appFqdn"]["value"])')"
 APP_NAME="$(echo "$OUTPUTS"   | python3 -c 'import sys,json;print(json.load(sys.stdin)["appName"]["value"])')"
 KV_NAME="$(echo "$OUTPUTS"    | python3 -c 'import sys,json;print(json.load(sys.stdin)["keyVaultName"]["value"])')"
@@ -197,6 +192,7 @@ VIEWER_NAME="$(echo "$OUTPUTS" | python3 -c 'import sys,json;print(json.load(sys
 VIEWER_URL="$(echo "$OUTPUTS"  | python3 -c 'import sys,json;print(json.load(sys.stdin)["viewerUrl"]["value"])')"
 
 echo "    resource group:  $RG_OUT"
+echo "    ACR:             $ACR_NAME"
 echo "    app FQDN:        https://$APP_FQDN"
 echo "    key vault:       $KV_NAME"
 echo "    viewer URL:      $VIEWER_URL"
@@ -338,8 +334,16 @@ echo
 echo "  API URL:        https://$APP_FQDN"
 echo "  Viewer URL:     $VIEWER_URL"
 echo "  Resource group: $RG_OUT"
+echo "  ACR:            $ACR_NAME"
 echo "  Key Vault:      $KV_NAME"
 echo "  Tenant:         $TENANT_ID"
+echo
+echo "Next steps — set up CI/CD (run from repo root):"
+echo "  AZURE_RG=$RG_OUT AZURE_APP=$APP_NAME ACR_NAME=$ACR_NAME \\"
+echo "    GITHUB_OWNER=<owner> GITHUB_REPO=<repo> \\"
+echo "    bash infra/azure-kit/scripts/setup-github-deploy.sh"
+echo "  AZURE_RG=$RG_OUT AZURE_APP=$APP_NAME ACR_NAME=$ACR_NAME \\"
+echo "    bash infra/azure-kit/scripts/setup-acr-deploy.sh"
 echo
 
 if [[ "$SWA_SKIPPED" != "true" ]]; then

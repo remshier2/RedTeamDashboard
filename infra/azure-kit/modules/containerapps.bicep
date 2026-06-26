@@ -12,8 +12,8 @@
 //   Trade-offs: single replica (minReplicas = maxReplicas = 1), no KEDA
 //   autoscaling on Redis Stream depth. Fine for one operator.
 //
-// Image: backend and worker share the same image; only the entrypoint
-// differs. Redis is `redis:7-alpine` with persistence off.
+// Image: backend and worker pull from ACR via this app's system-assigned managed
+// identity (AcrPull). Redis is `redis:7-alpine` with persistence off.
 
 targetScope = 'resourceGroup'
 
@@ -26,7 +26,12 @@ param environmentId string
 param keyVaultName string
 param keyVaultId string
 
-// Full image refs, e.g. `ghcr.io/donpercival0x45/rtd-backend:0.1.0`.
+// ACR login server and resource ID. The Container App pulls images via its
+// system-assigned Managed Identity (AcrPull granted below).
+param acrLoginServer string
+param acrId string
+
+// Full image refs, e.g. `<acr>.azurecr.io/rtd-backend:main`.
 param backendImage string
 param workerImage string
 
@@ -58,6 +63,7 @@ param acaMcpAppEnabled bool = false
 // ---------------------------------------------------------------------------
 
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 // ---------------------------------------------------------------------------
 // Secret refs + env (one shared app, one identity)
@@ -149,6 +155,14 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         allowInsecure: false
       }
       secrets: secretsFromKeyVault
+      // Pull from ACR using this app's system-assigned identity — no stored
+      // registry credentials. The AcrPull role assignment below wires the grant.
+      registries: [
+        {
+          server: acrLoginServer
+          identity: 'system'
+        }
+      ]
     }
     template: {
       containers: [
@@ -211,6 +225,22 @@ resource appKvSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: app.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+  }
+}
+
+// AcrPull: allows the Container App's system identity to pull images from ACR
+// without admin credentials. Scoped to the registry resource for least privilege.
+resource acrRef 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: last(split(acrId, '/'))
+}
+
+resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acrId, app.id, 'AcrPull')
+  scope: acrRef
+  properties: {
+    principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
   }
 }
 

@@ -18,10 +18,9 @@ param postgresAdminLogin = 'rtdadmin'
 // passes it inline via `--parameters postgresAdminPassword=$PG_PW`.
 // param postgresAdminPassword = ''
 
-// Image source — GHCR. Override `imageRepoOwner` if you forked the repo and
-// publish images under your own account.
-param imageRepoOwner = 'donpercival0x45'
-param imageTag = 'latest'
+// Initial image tag for the first deploy. After install.sh completes, subsequent
+// deploys are triggered automatically by pushing to ACR (see setup-acr-deploy.sh).
+param imageTag = 'main'
 
 // Default model provider for runs that don't specify one. Per-run override
 // (via the CLI / API) always wins, so this is just the floor default.

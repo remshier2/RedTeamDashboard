@@ -1,0 +1,44 @@
+# ACR Task — rolls the Container App when rtd-backend:main is pushed.
+#
+# Triggered by: az acr task create --image-trigger rtd-backend (setup-acr-deploy.sh)
+# Identity:     system-assigned Managed Identity with Container Apps Contributor on the RG
+#
+# Each step runs in a separate mcr.microsoft.com/azure-cli container. AZURE_CONFIG_DIR
+# is set to a path inside /workspace (shared across steps) so the az login from step 1
+# persists into the update steps. /workspace is the ACR Task working directory and is
+# mounted across all steps within the same run.
+#
+# Values ({{.Values.*}}) are set at task-creation time via `az acr task create --set`:
+#   APP_NAME      Container App name (from install.sh output)
+#   APP_RG        Resource group name
+#   SUBSCRIPTION  Azure subscription ID
+
+version: v1.1.0
+stepTimeout: 600
+
+steps:
+  # Authenticate using the task's system-assigned Managed Identity.
+  # Writes the token cache to /workspace/.azure so later steps reuse it.
+  - id: login
+    cmd: mcr.microsoft.com/azure-cli:latest az login --identity --only-show-errors
+    envs:
+      - AZURE_CONFIG_DIR=/workspace/.azure
+
+  - id: set-subscription
+    cmd: mcr.microsoft.com/azure-cli:latest az account set --subscription {{.Values.SUBSCRIPTION}}
+    envs:
+      - AZURE_CONFIG_DIR=/workspace/.azure
+
+  # Update backend container to the newly pushed :main image.
+  # This creates a new revision in single-revision mode; traffic shifts automatically.
+  - id: update-backend
+    cmd: mcr.microsoft.com/azure-cli:latest az containerapp update --name {{.Values.APP_NAME}} --resource-group {{.Values.APP_RG}} --container-name backend --image {{.Run.Registry}}/rtd-backend:main
+    envs:
+      - AZURE_CONFIG_DIR=/workspace/.azure
+
+  # Update worker container. Uses --revision-suffix to stamp the run ID so each
+  # push produces a uniquely named revision (required by Container Apps).
+  - id: update-worker
+    cmd: mcr.microsoft.com/azure-cli:latest az containerapp update --name {{.Values.APP_NAME}} --resource-group {{.Values.APP_RG}} --container-name worker --image {{.Run.Registry}}/rtd-worker:main --revision-suffix acr-{{.Run.ID}}
+    envs:
+      - AZURE_CONFIG_DIR=/workspace/.azure

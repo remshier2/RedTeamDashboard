@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
@@ -37,7 +37,21 @@ from app.orchestrator.tools.runtime import ToolResult
 logger = structlog.get_logger(__name__)
 
 
-MCPExecutor = Callable[[str, Mapping[str, Any]], ToolResult]
+@runtime_checkable
+class ExecutorProtocol(Protocol):
+    """Synchronous contract for tool execution substrates.
+
+    The dispatch node accepts any callable matching this shape — the local
+    ``run_tool`` registry path and the MCP-over-SSE path both conform. Type
+    checkers can verify injection sites without coupling them to a concrete
+    implementation.
+    """
+
+    def __call__(self, tool_name: str, args: Mapping[str, Any]) -> ToolResult: ...
+
+
+# Backward-compat alias used by existing call sites and the runner's GraphFactory.
+MCPExecutor = ExecutorProtocol
 
 
 def make_mcp_executor(

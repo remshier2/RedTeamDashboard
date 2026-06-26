@@ -7,12 +7,12 @@
 //   - Application Insights (workspace-based)
 //   - Postgres Flexible Server — VNet-injected, no public access
 //   - Key Vault (RBAC mode) with seeded secrets
+//   - Azure Container Registry (Standard) for image storage
 //   - Container Apps Environment (Consumption, VNet-integrated)
 //   - One Container App with three colocated containers: backend, worker, redis
 //   - Azure Static Web App hosting the viewer (gated by Entra ID)
 //
 // What's NOT here:
-//   - Any container registry: images are public on GHCR. No auth needed.
 //   - LLM API keys: placeholders in Key Vault; operator populates after deploy.
 //   - Azure OpenAI resource: provision separately and populate the KV secrets
 //     if using llmProvider=azure. Default is anthropic.
@@ -41,11 +41,8 @@ param postgresAdminLogin string = 'rtdadmin'
 @secure()
 param postgresAdminPassword string
 
-@description('GHCR repository owner (e.g. "donpercival0x45"). The kit pulls images from ghcr.io/<owner>/rtd-{backend,worker}:<tag>.')
-param imageRepoOwner string = 'donpercival0x45'
-
-@description('Image tag for backend + worker (e.g. "0.1.0", "v0.1.0", "main"). Bump on each release.')
-param imageTag string = 'latest'
+@description('Image tag for backend + worker (e.g. "main", "0.1.0"). The ACR Task deploy-rtd uses :main; this param is for manual/initial deploys via install.sh.')
+param imageTag string = 'main'
 
 @description('Default LLM provider for runs that don\'t pick one explicitly. The CLI/API can override per run.')
 @allowed([ 'anthropic', 'openai', 'azure' ])
@@ -205,8 +202,22 @@ module viewer 'modules/viewer.bicep' = {
   }
 }
 
-var backendImage = 'ghcr.io/${imageRepoOwner}/rtd-backend:${imageTag}'
-var workerImage = 'ghcr.io/${imageRepoOwner}/rtd-worker:${imageTag}'
+// ---------------------------------------------------------------------------
+// Container Registry — images pushed by CI, pulled by Container Apps
+// ---------------------------------------------------------------------------
+
+module acr 'modules/acr.bicep' = {
+  name: 'acr'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+  }
+}
+
+var backendImage = '${acr.outputs.acrLoginServer}/rtd-backend:${imageTag}'
+var workerImage = '${acr.outputs.acrLoginServer}/rtd-worker:${imageTag}'
 
 // Stage 2 — secondary MCP App with scale-to-zero. Lives in the same env
 // so internal DNS just works; ingress is external so the worker can
@@ -223,6 +234,8 @@ module mcpApp 'modules/mcp_app.bicep' = {
     environmentId: caenv.outputs.id
     keyVaultName: kv.outputs.name
     keyVaultId: kv.outputs.id
+    acrLoginServer: acr.outputs.acrLoginServer
+    acrId: acr.outputs.acrId
     backendImage: backendImage
     appInsightsConnectionString: ai.outputs.connectionString
   }
@@ -238,6 +251,8 @@ module apps 'modules/containerapps.bicep' = {
     environmentId: caenv.outputs.id
     keyVaultName: kv.outputs.name
     keyVaultId: kv.outputs.id
+    acrLoginServer: acr.outputs.acrLoginServer
+    acrId: acr.outputs.acrId
     backendImage: backendImage
     workerImage: workerImage
     llmProvider: llmProvider
@@ -279,6 +294,8 @@ resource appStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 output resourceGroupName string = rg.name
+output acrName string = acr.outputs.acrName
+output acrLoginServer string = acr.outputs.acrLoginServer
 output appFqdn string = apps.outputs.appFqdn
 output appName string = apps.outputs.appName
 output keyVaultName string = kv.outputs.name
