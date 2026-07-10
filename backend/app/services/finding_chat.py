@@ -7,6 +7,7 @@ that route approvals through existing suggestion/task/finding APIs.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import uuid
@@ -281,11 +282,18 @@ def build_finding_dossier(session: Session, finding: Finding) -> dict[str, Any]:
     }
 
 
-def _action_ledger_line(session: Session, action: dict[str, Any]) -> str:
+def _action_ledger_line(
+    action: dict[str, Any],
+    *,
+    task_by_id: dict[uuid.UUID, Task],
+    findings_by_run: dict[str, int],
+) -> str:
     """One compact ledger line so the AI can see an action's lifecycle.
 
     Prevents the re-suggestion loop: without the status + outcome fed back
-    into history, the model re-derives the same proposals every turn.
+    into history, the model re-derives the same proposals every turn. The
+    Task + findings-count lookups are precomputed by the caller (batched) —
+    this function is pure, no per-action DB hits (was an N+1).
     """
     title = str(action.get("title") or action.get("type") or "action")
     status = str(action.get("status") or "proposed")
@@ -294,22 +302,14 @@ def _action_ledger_line(session: Session, action: dict[str, Any]) -> str:
     outcome = ""
     if typ == "run_tool" and result.get("task_id"):
         try:
-            task = session.get(Task, uuid.UUID(str(result["task_id"])))
+            task = task_by_id.get(uuid.UUID(str(result["task_id"])))
         except (ValueError, TypeError):
             task = None
         if task is not None:
             outcome = f", run {task.status.value}"
             run_id = result.get("run_id")
             if task.status == TaskStatus.completed and run_id:
-                n = (
-                    session.execute(
-                        select(func.count(Finding.id)).where(
-                            Finding.engagement_id == task.engagement_id,
-                            Finding.details["thread_id"].astext == str(run_id),
-                        )
-                    ).scalar()
-                    or 0
-                )
+                n = findings_by_run.get(str(run_id), 0)
                 outcome += f", produced {n} finding(s)"
             if task.status == TaskStatus.failed:
                 outcome += " (failed — likely out-of-scope or approval gate)"
@@ -322,6 +322,46 @@ def _conversation_history_prompt(
     session: Session, messages: list[ConversationMessage]
 ) -> str:
     clipped = messages[-12:]
+
+    # Batch the Task + produced-findings lookups ONCE instead of per action
+    # (was a messages×actions N+1 on every chat turn).
+    task_ids: set[uuid.UUID] = set()
+    run_ids: set[str] = set()
+    for m in clipped:
+        payload = m.action_payload if isinstance(m.action_payload, dict) else {}
+        actions = payload.get("actions", []) if isinstance(payload.get("actions"), list) else []
+        for a in actions:
+            if not isinstance(a, dict):
+                continue
+            r = a.get("result") if isinstance(a.get("result"), dict) else {}
+            tid = r.get("task_id")
+            rid = r.get("run_id")
+            if a.get("type") == "run_tool":
+                if tid:
+                    with contextlib.suppress(ValueError, TypeError):
+                        task_ids.add(uuid.UUID(str(tid)))
+                if rid:
+                    run_ids.add(str(rid))
+    task_by_id: dict[uuid.UUID, Task] = {}
+    if task_ids:
+        task_by_id = {
+            t.id: t
+            for t in session.execute(
+                select(Task).where(Task.id.in_(task_ids))
+            ).scalars()
+        }
+    findings_by_run: dict[str, int] = {}
+    if run_ids:
+        rows = session.execute(
+            select(
+                Finding.details["thread_id"].astext,
+                func.count(Finding.id),
+            )
+            .where(Finding.details["thread_id"].astext.in_(run_ids))
+            .group_by(Finding.details["thread_id"].astext)
+        ).all()
+        findings_by_run = {str(tid): int(cnt or 0) for tid, cnt in rows}
+
     lines: list[str] = []
     for m in clipped:
         if m.content.strip():
@@ -334,7 +374,11 @@ def _conversation_history_prompt(
         )
         for a in actions:
             if isinstance(a, dict):
-                lines.append(_action_ledger_line(session, a))
+                lines.append(
+                    _action_ledger_line(
+                        a, task_by_id=task_by_id, findings_by_run=findings_by_run
+                    )
+                )
     return "\n".join(lines)
 
 
